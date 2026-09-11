@@ -255,74 +255,136 @@ class ImageProcessor:
         return self._clip01(mixed)
 
     def _scratches(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
-        """Hairline scratches: dark grooves + highlight-modulated specular streaks."""
+        # Realistic thin anti-aliased hairline scratches:
+        # - predominantly faint dark grooves
+        # - specular highlights only as thin companions gated by image highlights
+        # - micro-wobble and clustered parallels
+        # - edge-biased occurrence
+        # - soft local haze along the scratch path only
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
-        vis = float(np.power(max(t, 0.0), 0.75))
         rng = np.random.default_rng(seed if seed is not None else 0)
-        dark_alpha = np.zeros((h, w), dtype=np.float32)
-        spec_alpha = np.zeros((h, w), dtype=np.float32)
+        img_f = img.astype(np.float32)
+        # Nonlinear visibility so 30–50% is clearly visible but natural
+        vis = float(np.clip(0.08 + (t ** 0.62) * 0.92, 0.0, 1.0))
+        # Highlight gate (strong specular only where base image is bright)
+        b, g, r = cv2.split(img_f)
+        luma = (0.114 * b + 0.587 * g + 0.299 * r).astype(np.float32)
+        gate = np.clip((luma - 0.58) / 0.25, 0.0, 1.0)  # 0 below ~0.58, 1 above ~0.83
+        gate = gate * gate  # tighten
+        # Masks (HxW)
+        dark_mask = np.zeros((h, w), dtype=np.float32)
+        bright_mask = np.zeros((h, w), dtype=np.float32)
+        haze_mask = np.zeros((h, w), dtype=np.float32)
+        # Edge bias via inverse radial mask
+        edge_bias = (1.0 - self._radial_mask(h, w))  # 0 center, 1 edges
         area_scale = max(1.0, np.sqrt(h * w) / 900.0)
-        count = int(min(260, 18 + int(55 * vis * area_scale)))
-        edge = 1.0 - self._radial_mask(h, w)
-        edge = cv2.GaussianBlur(edge.astype(np.float32), (0, 0), sigmaX=6.0)
-        y = self._luminance_bgr(img.astype(np.float32))
-        hi = np.clip((y - 0.45) / 0.55, 0.0, 1.0).astype(np.float32)
+        n_clusters = int(min(90, (6 + 16 * vis) * area_scale))
+        # Helper to draw a polyline path with micro wobble
+        def draw_cluster(start_xy: tuple[int, int], direction: np.ndarray, length_px: float) -> None:
+            dir_vec = direction / (np.linalg.norm(direction) + 1e-6)
+            # Perpendicular
+            nrm = np.array([-dir_vec[1], dir_vec[0]], dtype=np.float32)
+            # Steps along the path
+            step_px = 8.0
+            steps = max(4, int(length_px / step_px))
+            pts = []
+            wob_amp = 0.6 + 1.4 * vis  # micro wobble amplitude in px
+            wob = 0.0
+            x, y = float(start_xy[0]), float(start_xy[1])
+            for i in range(steps):
+                # Cumulative small wobble for smoothness
+                wob += float(rng.normal(0.0, 0.35))
+                off = np.clip(wob, -wob_amp, wob_amp)
+                px = x + dir_vec[0] * (i * step_px) + nrm[0] * off
+                py = y + dir_vec[1] * (i * step_px) + nrm[1] * off
+                pts.append((int(round(px)), int(round(py))))
+            if len(pts) < 2:
+                return
+            # Central dark groove
+            thickness = 1 if rng.random() < 0.85 else 2
+            cv2.polylines(dark_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=thickness, lineType=cv2.LINE_AA)
+            # Parallel companions (very close)
+            companions = 1 if rng.random() < 0.7 else 2 if rng.random() < 0.3 else 0
+            for k in range(companions):
+                off_sign = -1.0 if (k % 2 == 0) else 1.0
+                off_amt = (0.7 + 0.6 * rng.random()) * off_sign
+                pts2 = [(int(round(px + nrm[0] * off_amt)), int(round(py + nrm[1] * off_amt))) for (px, py) in pts]
+                cv2.polylines(dark_mask, [np.array(pts2, dtype=np.int32)], False, color=0.9, thickness=1, lineType=cv2.LINE_AA)
+            # Specular companion exactly on the groove line (ultra thin)
+            cv2.polylines(bright_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=1, lineType=cv2.LINE_AA)
+            # Haze: slightly wider mark for local softening
+            cv2.polylines(haze_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=2 + (1 if thickness > 1 else 0), lineType=cv2.LINE_AA)
 
-        def _draw_line(alpha: np.ndarray, x0: int, y0: int, x1: int, y1: int, opa: float) -> None:
-            cv2.line(alpha, (x0, y0), (x1, y1), float(opa), thickness=1, lineType=cv2.LINE_AA)
+        # Spawn clusters, biased to edges and spanning inward
+        for _ in range(n_clusters):
+            # Pick a side (0=L,1=R,2=T,3=B)
+            side = int(rng.integers(0, 4))
+            if side == 0:  # left
+                y0 = int(rng.integers(-h // 8, h + h // 8))
+                start = (-8, y0)
+                direction = np.array([1.0, rng.uniform(-0.35, 0.35)], dtype=np.float32)
+                inward = np.array([1.0, 0.0], dtype=np.float32)
+                d_edge = 1.0
+            elif side == 1:  # right
+                y0 = int(rng.integers(-h // 8, h + h // 8))
+                start = (w + 8, y0)
+                direction = np.array([-1.0, rng.uniform(-0.35, 0.35)], dtype=np.float32)
+                inward = np.array([-1.0, 0.0], dtype=np.float32)
+                d_edge = 1.0
+            elif side == 2:  # top
+                x0 = int(rng.integers(-w // 8, w + w // 8))
+                start = (x0, -8)
+                direction = np.array([rng.uniform(-0.35, 0.35), 1.0], dtype=np.float32)
+                inward = np.array([0.0, 1.0], dtype=np.float32)
+                d_edge = 1.0
+            else:  # bottom
+                x0 = int(rng.integers(-w // 8, w + w // 8))
+                start = (x0, h + 8)
+                direction = np.array([rng.uniform(-0.35, 0.35), -1.0], dtype=np.float32)
+                inward = np.array([0.0, -1.0], dtype=np.float32)
+                d_edge = 1.0
+            # Length scaled by vis and size, slight inward bias
+            base_len = (0.45 + 0.75 * rng.random()) * (0.65 + 0.7 * vis) * float(max(h, w))
+            # Occasional short cluster (micro scuffs)
+            if rng.random() < (0.25 + 0.35 * (1.0 - vis)):
+                base_len *= 0.45
+            # Small inward "pull" to avoid exiting immediately
+            direction = (direction * 0.85 + inward * 0.15).astype(np.float32)
+            draw_cluster(start, direction, base_len)
 
-        for _ in range(count):
-            if rng.random() < 0.65:
-                side = int(rng.integers(0, 4))
-                if side == 0:
-                    x0, y0 = 0, int(rng.integers(0, h))
-                elif side == 1:
-                    x0, y0 = w - 1, int(rng.integers(0, h))
-                elif side == 2:
-                    x0, y0 = int(rng.integers(0, w)), 0
-                else:
-                    x0, y0 = int(rng.integers(0, w)), h - 1
-            else:
-                x0 = int(rng.integers(0, w))
-                y0 = int(rng.integers(0, h))
-            angle = float(rng.normal(np.deg2rad(30 if rng.random() < 0.5 else 150), np.deg2rad(14)))
-            length = int(rng.uniform(0.18, 0.95) * max(h, w))
-            x1 = int(x0 + length * np.cos(angle))
-            y1 = int(y0 - length * np.sin(angle))
-            midx = int((x0 + x1) / 2)
-            midy = int((y0 + y1) / 2)
-            e_w = float(edge[np.clip(midy, 0, h - 1), np.clip(midx, 0, w - 1)])
-            opa = (0.08 + 0.20 * vis) * (0.55 + 0.70 * e_w)
-            # Always a faint dark groove
-            _draw_line(dark_alpha, x0, y0, x1, y1, opa * 0.85)
-            # Specular companion on many scratches
-            if rng.random() < 0.7:
-                _draw_line(spec_alpha, x0, y0, x1, y1, opa)
-
-        # Occasional arcs
-        for _ in range(int(1 + 3 * vis)):
-            if rng.random() < 0.45:
-                center = (int(rng.integers(-w // 2, w + w // 2)), int(rng.integers(-h // 2, h + h // 2)))
-                axes = (int(rng.uniform(0.45, 1.25) * w), int(rng.uniform(0.45, 1.25) * h))
-                start_angle = int(rng.uniform(0, 360))
-                end_angle = start_angle + int(rng.uniform(12, 70))
-                opa = 0.04 + 0.10 * vis
-                cv2.ellipse(dark_alpha, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
-                cv2.ellipse(spec_alpha, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
-
-        dark_alpha = cv2.GaussianBlur(dark_alpha, (0, 0), sigmaX=0.7)
-        spec_alpha = cv2.GaussianBlur(spec_alpha, (0, 0), sigmaX=0.7)
-        spec_alpha = np.clip(spec_alpha * (0.20 + 0.95 * hi), 0.0, 1.0)
-        dark3 = self._ensure_3c(dark_alpha)
-        spec3 = self._ensure_3c(spec_alpha)
-        base = img.astype(np.float32) * (1.0 - 0.92 * dark3)
-        screen = 1.0 - (1.0 - base) * (1.0 - 0.90 * spec3)
-        out = self._clip01(screen)
-        haze = cv2.GaussianBlur(out, (0, 0), sigmaX=2.0)
-        haze_amt = 0.14 * vis
-        out = self._clip01(out * (1.0 - haze_amt * spec3) + haze * (haze_amt * spec3))
+        # Post-process masks
+        if dark_mask.max() > 0:
+            dark_mask = cv2.GaussianBlur(dark_mask, (0, 0), sigmaX=0.6)
+        if bright_mask.max() > 0:
+            # Gate by highlights; keep ultra thin and sparse
+            bright_mask = bright_mask * (gate ** 1.6)
+            bright_mask = cv2.GaussianBlur(bright_mask, (0, 0), sigmaX=0.5)
+        if haze_mask.max() > 0:
+            haze_mask = cv2.GaussianBlur(haze_mask, (0, 0), sigmaX=1.6)
+            # Only haze where there is a dark groove
+            haze_mask = np.minimum(haze_mask, cv2.GaussianBlur(dark_mask, (0, 0), sigmaX=1.2))
+        dark_mask = np.clip(dark_mask, 0.0, 1.0).astype(np.float32)
+        bright_mask = np.clip(bright_mask, 0.0, 1.0).astype(np.float32)
+        haze_mask = np.clip(haze_mask, 0.0, 1.0).astype(np.float32)
+        # Strengths
+        dark_k = np.float32(0.18 + 0.36 * vis)    # multiplicative dimming
+        bright_k = np.float32(0.05 + 0.22 * vis)  # additive highlight (gated)
+        haze_k = np.float32(0.06 + 0.18 * vis)    # local soft haze
+        # Apply dark grooves (edge-biased slightly stronger)
+        edge_boost = (0.85 + 0.30 * edge_bias).astype(np.float32)
+        dark3 = self._ensure_3c(dark_mask * edge_boost)
+        out = self._clip01(img_f * (1.0 - dark_k * dark3))
+        # Apply specular companions (white, highlight-gated)
+        if bright_k > 0:
+            spec3 = self._ensure_3c(bright_mask * gate)
+            out = self._clip01(out + bright_k * spec3)
+        # Local haze along scratches (blend with a slightly blurred base)
+        if haze_k > 0:
+            base_blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.35)
+            haze3 = self._ensure_3c(haze_mask)
+            out = self._clip01(out * (1.0 - 0.5 * haze_k * haze3) + base_blur * (0.5 * haze_k * haze3))
         return out
 
     def _expired_film(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
@@ -364,50 +426,76 @@ class ImageProcessor:
         return out
 
     def _light_leak(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
-        """Analog light leak: asymmetric corner pools + edge sine bands."""
+        """Organic asymmetric 1–2 corner cubic pools + soft irregular edge bleed (noise-warp).
+        Warm orange→amber→magenta/red cast. Screen/additive + gentle bloom. Mid intensity visible."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 2)
-        vis = float(np.power(max(t, 0.0), 0.75))
-        out = img.astype(np.float32).copy()
+        img_f = img.astype(np.float32)
+        # Nonlinear visibility so 40–60% reads obviously analog
+        vis = float(np.clip(0.10 + (t ** 0.65) * 0.90, 0.0, 1.0))
+        # Coordinates
         y, x = np.ogrid[:h, :w]
-        dist_left = x / max(1, w - 1)
-        dist_right = (w - 1 - x) / max(1, w - 1)
-        dist_top = y / max(1, h - 1)
-        dist_bottom = (h - 1 - y) / max(1, h - 1)
-        corners = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
-        n_corners = int(rng.integers(1, 3))
-        corner_ids = rng.choice(4, size=n_corners, replace=False)
+        nx = x.astype(np.float32) / max(1, w - 1)
+        ny = y.astype(np.float32) / max(1, h - 1)
+        # Corner pools (choose 1–2 corners)
+        corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+        pick = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
         pool = np.zeros((h, w), dtype=np.float32)
-        diag = float(np.sqrt(h * h + w * w))
-        for cid in corner_ids:
-            cy, cx = corners[int(cid)]
-            d = np.sqrt(((y - cy) ** 2 + (x - cx) ** 2)) / (0.65 * diag)
-            pool = np.maximum(pool, np.clip(1.0 - d, 0.0, 1.0) ** 3)
-        v = np.minimum(dist_top, dist_bottom).astype(np.float32)
-        u = (x / max(1, w - 1)).astype(np.float32)
-        freq = 3.0 + 2.0 * vis
-        phase = float(rng.uniform(0, 2 * np.pi))
-        bands_h = (np.sin(2 * np.pi * freq * u + phase) ** 2) * (np.clip(1.0 - v, 0.0, 1.0) ** 2)
-        v2 = np.minimum(dist_left, dist_right).astype(np.float32)
-        u2 = (y / max(1, h - 1)).astype(np.float32)
-        phase2 = float(rng.uniform(0, 2 * np.pi))
-        bands_v = (np.sin(2 * np.pi * freq * u2 + phase2) ** 2) * (np.clip(1.0 - v2, 0.0, 1.0) ** 2)
-        bands = np.clip(bands_h + bands_v, 0.0, 1.0)
-        mask2d = np.clip(0.65 * pool + 0.45 * bands, 0.0, 1.0)
-        mask2d = cv2.GaussianBlur(mask2d, (0, 0), sigmaX=4.0)
-        palette = [
-            np.array([0.06, 0.35, 0.95], dtype=np.float32),  # BGR warm amber
-            np.array([0.04, 0.45, 0.92], dtype=np.float32),
-            np.array([0.18, 0.12, 0.90], dtype=np.float32),
-        ]
-        color = palette[int(rng.integers(0, len(palette)))]
-        mask3 = self._ensure_3c(mask2d ** 1.1)
-        amt = 0.18 + 0.75 * vis
-        out = 1.0 - (1.0 - out) * (1.0 - amt * mask3 * color[None, None, :])
-        glow = cv2.GaussianBlur(out, (0, 0), sigmaX=3.0)
-        out = self._clip01(out * (1.0 - 0.25 * vis * mask3) + glow * (0.25 * vis * mask3))
+        for idx in pick:
+            cx, cy = corners[idx]
+            dx = np.abs(nx - cx)
+            dy = np.abs(ny - cy)
+            d = np.sqrt(dx * dx + dy * dy)
+            # Cubic pool with slight random size/power
+            pwr = 2.6 + 0.9 * rng.random()
+            rad = 1.0
+            v = np.clip(1.0 - (d / rad) ** pwr, 0.0, 1.0) ** 3.0
+            # Slight asym wobble via smoothed noise
+            n = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+            n = cv2.GaussianBlur(n, (0, 0), sigmaX=10.0 + 18.0 * vis)
+            n = (n - n.min()) / max(1e-6, n.max() - n.min())
+            v *= (0.80 + 0.35 * n)
+            pool = np.maximum(pool, v.astype(np.float32))
+        # Irregular edge bleed (distance from nearest edge with noise warp)
+        dist_l = nx
+        dist_r = 1.0 - nx
+        dist_t = ny
+        dist_b = 1.0 - ny
+        dmin = np.minimum(np.minimum(dist_l, dist_r), np.minimum(dist_t, dist_b))
+        bleed = np.exp(-5.0 * (dmin ** (0.75)))  # strong at edges, falls inwards
+        # Noise warp (low-frequency)
+        wn = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+        wn = cv2.GaussianBlur(wn, (0, 0), sigmaX=12.0 + 15.0 * vis)
+        wn = (wn - wn.min()) / max(1e-6, wn.max() - wn.min())
+        bleed *= (0.65 + 0.45 * wn)
+        bleed = cv2.GaussianBlur(bleed, (0, 0), sigmaX=3.0)
+        # Combine masks
+        leak_mask = np.clip(np.maximum(pool, 0.55 * bleed), 0.0, 1.0)
+        # Color ramp: orange -> amber -> magenta/red (BGR)
+        orange = np.array([0.03, 0.22, 0.56], dtype=np.float32)
+        amber = np.array([0.05, 0.30, 0.50], dtype=np.float32)
+        magenta_red = np.array([0.14, 0.06, 0.62], dtype=np.float32)
+        r1 = float(rng.uniform(0.25, 0.85))
+        r2 = float(rng.uniform(0.25, 0.95))
+        warm = orange * (1.0 - r1) + amber * r1
+        color = warm * (1.0 - r2) + magenta_red * r2
+        # Strength and shaping
+        mask_shaped = leak_mask ** (0.95)  # preserve core intensity
+        k = 0.28 + 0.60 * vis
+        # Screen blend: out = 1 - (1-img)*(1 - k * mask * color)
+        mask3 = self._ensure_3c(mask_shaped) * color[None, None, :]
+        add = np.clip(k * mask3, 0.0, 1.0).astype(np.float32)
+        out = 1.0 - (1.0 - img_f) * (1.0 - add)
+        out = self._clip01(out)
+        # Gentle bloom on high mask regions
+        if leak_mask.max() > 1e-6:
+            glow_mask = (cv2.GaussianBlur(leak_mask, (0, 0), sigmaX=2.8)) ** 1.1
+            glow3 = self._ensure_3c(np.clip(glow_mask, 0.0, 1.0))
+            blurred = cv2.GaussianBlur(out, (0, 0), sigmaX=2.2 + 1.8 * vis)
+            bloom_k = 0.15 + 0.25 * vis
+            out = self._clip01(out * (1.0 - bloom_k * glow3) + blurred * (bloom_k * glow3))
         return out
 
     def _apply_special_fx(self, img: np.ndarray, options: ProcessOptions) -> np.ndarray:
