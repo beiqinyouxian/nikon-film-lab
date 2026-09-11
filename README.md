@@ -85,3 +85,28 @@ pytest -q
 - Auto tries OpenCL via OpenCV (UMat). If unavailable, falls back to CPU.
 - Preview uses downscaled display only; export keeps source full resolution.
 
+### Windows 可执行文件（.exe）
+
+**从 GitHub Actions 下载**
+- 打开仓库的 “Actions” 页面，选择工作流“Windows Build (PyInstaller)”
+- 在最新一次运行中，进入 “Artifacts” 下载 `NikonFilmLab-windows-onedir.zip`
+- 解压后，进入 `NikonFilmLab/` 文件夹，双击运行 `NikonFilmLab.exe`
+- 如遇 Windows SmartScreen 拦截，请选择“仍要运行”
+- 如系统缺少运行时导致无法启动，可安装微软“Visual C++ 2015-2022 可再发行组件”（通常无需手动安装）
+- OpenCL/iGPU 加速取决于显卡驱动与 OpenCL 运行时是否正确安装（无则自动回退 CPU）
+
+**本地在 Windows 打包（可选）**
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller --noconfirm --clean packaging/NikonFilmLab.spec
+```
+生成目录：`dist/NikonFilmLab/`，其中包含 `NikonFilmLab.exe` 与依赖 DLL/资源（onedir 结构更适合 Qt+OpenCV+rawpy 组合）。你也可以将该文件夹压缩分发。
+
+说明
+- 入口：`src/nikon_film_app/main.py`（GUI，无控制台窗口）
+- 已在 spec 中收集 PySide6、cv2、rawpy 的二进制与资源
+- rawpy/LibRaw、OpenCV 与 Qt 插件均已打包到 onedir 结果中
+
