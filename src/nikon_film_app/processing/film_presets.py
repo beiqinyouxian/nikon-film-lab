@@ -365,7 +365,28 @@ def _auto_baseline(img: np.ndarray) -> np.ndarray:
     return _clip01(img * gain)
 
 
-ProcessFunc = Callable[[np.ndarray, Accelerator, float, GrainParams, bool, Optional[float], bool, Optional[int], float, float, float], np.ndarray]
+# process signature:
+ProcessFunc = Callable[
+    [
+        np.ndarray,            # img
+        Accelerator,           # accelerator
+        float,                 # strength01
+        GrainParams,           # grain params
+        bool,                  # enable_vignette
+        Optional[float],       # vignette_override01
+        bool,                  # auto_base
+        Optional[int],         # grain_seed
+        float,                 # exposure_ev (may be 0 when caller wants film-only)
+        float,                 # temp01
+        float,                 # clarity
+        float,                 # user_contrast
+        float,                 # highlights
+        float,                 # shadows
+        float,                 # vibrance
+        float,                 # user_saturation
+    ],
+    np.ndarray,
+]
 
 
 @dataclass

@@ -24,6 +24,11 @@ app_name = "NikonFilmLab"
 SPEC_DIR = Path(SPECPATH).resolve()
 REPO_ROOT = SPEC_DIR.parent
 entry_script = str(REPO_ROOT / "src" / "nikon_film_app" / "main.py")
+assets_dir = REPO_ROOT / "assets"
+assets_dir.mkdir(exist_ok=True)
+icon_png = assets_dir / "app_icon.png"
+icon_ico = assets_dir / "app_icon.ico"
+datas.append((str(icon_png), "assets"))
 
 a = Analysis(
     [entry_script],
@@ -55,7 +60,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=(str(icon_ico) if icon_ico.exists() else None),
 )
 
 coll = COLLECT(

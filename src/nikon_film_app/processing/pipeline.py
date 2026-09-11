@@ -7,7 +7,18 @@ import cv2
 import numpy as np
 
 from .accelerator import Accelerator, BackendMode
-from .film_presets import get_presets, GrainParams, GrainType
+from .film_presets import (
+    get_presets,
+    GrainParams,
+    GrainType,
+    _apply_exposure,
+    _apply_color_temp,
+    _apply_clarity,
+    _adjust_contrast,
+    _apply_highlights_shadows,
+    _apply_vibrance,
+    _adjust_saturation,
+)
 
 
 @dataclass
@@ -102,6 +113,7 @@ class ImageProcessor:
         shadows = max(-1.0, min(1.0, options.shadows / 100.0))
         vibrance = max(-1.0, min(1.0, options.vibrance / 100.0))
         saturation = max(-1.0, min(1.0, options.saturation / 100.0))
+        # Film preset look only (manual params zeroed), blended by strength
         out = preset.process(
             img,
             self.accel,
@@ -111,16 +123,31 @@ class ImageProcessor:
             vignette_override,
             options.enable_auto_baseline,
             options.grain_seed,
-            exposure_ev,
-            temp01,
-            clarity_amount,
-            contrast_amount,
-            highlights,
-            shadows,
-            vibrance,
-            saturation,
+            0.0,  # exposure inside preset
+            0.0,  # temp
+            0.0,  # clarity
+            0.0,  # user_contrast
+            0.0,  # highlights
+            0.0,  # shadows
+            0.0,  # vibrance
+            0.0,  # user_saturation
         )
-        # Apply color splitter after film look (independent of presets), before defects
+        # Apply manual tone/color controls AFTER preset blend (decoupled from strength)
+        if abs(exposure_ev) > 1e-6:
+            out = _apply_exposure(out, exposure_ev)
+        if abs(temp01) > 1e-6:
+            out = _apply_color_temp(out, temp01)
+        if abs(clarity_amount) > 1e-6:
+            out = _apply_clarity(out, clarity_amount)
+        if abs(contrast_amount) > 1e-6:
+            out = _adjust_contrast(out, 0.8 * contrast_amount)
+        if abs(highlights) > 1e-6 or abs(shadows) > 1e-6:
+            out = _apply_highlights_shadows(out, highlights, shadows)
+        if abs(vibrance) > 1e-6:
+            out = _apply_vibrance(out, vibrance)
+        if abs(saturation) > 1e-6:
+            out = _adjust_saturation(out, 0.7 * saturation)
+        # Apply color splitter after manual controls, before defects
         if getattr(options, "hsl_sat8", None) is None:
             options.hsl_sat8 = [0] * 8
         if getattr(options, "hsl_lum8", None) is None:
