@@ -356,6 +356,15 @@ def get_presets() -> Dict[str, FilmPreset]:
         return np.array([rg, gg, bg], dtype=np.float32)
 
     presets = [
+        # Identity / Bypass film look (可配合颗粒/暗角/自动基线)
+        _build_preset(
+            "不处理",
+            (0.0, 0.5, 1.0),
+            mat((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            contrast=0.0,
+            saturation=0.0,
+            default_vignette=0.0,
+        ),
         # Kodak family
         _build_preset(
             "Kodak Portra 400",

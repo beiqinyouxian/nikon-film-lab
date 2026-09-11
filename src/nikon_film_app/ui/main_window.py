@@ -54,7 +54,13 @@ class ProcessorThread(QtCore.QThread):
         self.queue: List[QueueItem] = []
         self.cancelled = False
         self.processor = ImageProcessor()
-        self.options = ProcessOptions(preset_name="Kodak Portra 400")
+        self.options = ProcessOptions(
+            preset_name="不处理",
+            strength_percent=0,
+            enable_grain=False,
+            enable_vignette=False,
+            enable_auto_baseline=False,
+        )
         self.export_dir = os.getcwd()
         self.backend = BackendMode.AUTO
 
@@ -136,13 +142,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_timer.timeout.connect(self._render_preview)
         self._preview_seq = 0
 
-        # UI
-        self.before_label = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.after_label = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.before_label.setMinimumSize(200, 200)
-        self.after_label.setMinimumSize(200, 200)
-        self.before_label.setScaledContents(False)
-        self.after_label.setScaledContents(False)
+        # UI - single preview
+        self.preview_label = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(200, 200)
+        self.preview_label.setScaledContents(False)
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -160,12 +163,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItems(self.thread.processor.list_presets())
+        # default to "不处理"
+        idx_id = self.preset_combo.findText("不处理")
+        if idx_id >= 0:
+            self.preset_combo.setCurrentIndex(idx_id)
         self.strength_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.strength_slider.setMinimum(0)
         self.strength_slider.setMaximum(100)
-        self.strength_slider.setValue(100)
+        self.strength_slider.setValue(0)
         self.grain_check = QtWidgets.QCheckBox("颗粒")
-        self.grain_check.setChecked(True)
+        self.grain_check.setChecked(False)
         self.grain_type = QtWidgets.QComboBox()
         self.grain_type.addItems([GrainType.SILVER_HALIDE.value, GrainType.MODERN_FINE.value, GrainType.COARSE_PUSH.value])
         self.grain_size = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -181,8 +188,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_chroma.setRange(0, 100)
         self.grain_chroma.setValue(0)
         self.vignette_check = QtWidgets.QCheckBox("暗角")
+        self.vignette_check.setChecked(False)
         self.auto_check = QtWidgets.QCheckBox("自动基线（曝光/色温）")
-        self.auto_check.setChecked(True)
+        self.auto_check.setChecked(False)
 
         self.backend_combo = QtWidgets.QComboBox()
         self.backend_combo.addItems([BackendMode.AUTO.value, BackendMode.CPU.value, BackendMode.OPENCL.value])
@@ -205,10 +213,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(self.progress)
 
         right = QtWidgets.QVBoxLayout()
-        imgs = QtWidgets.QHBoxLayout()
-        imgs.addWidget(self.before_label, 1)
-        imgs.addWidget(self.after_label, 1)
-        right.addLayout(imgs, 1)
+        right.addWidget(self.preview_label, 1)
         form = QtWidgets.QFormLayout()
         form.addRow("预设：", self.preset_combo)
         form.addRow("强度：", self.strength_slider)
@@ -230,7 +235,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
         right.addLayout(btns)
-        right.addWidget(QtWidgets.QLabel("提示：导出始终为原始全分辨率，预览仅为缩放显示。"))
+        right.addWidget(QtWidgets.QLabel("提示：预览为单图等比适配；导出始终为原始全分辨率。"))
 
         root = QtWidgets.QSplitter()
         lw = QtWidgets.QWidget()
@@ -304,8 +309,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_clear(self) -> None:
         self.list_widget.clear()
-        self.before_label.clear()
-        self.after_label.clear()
+        self.preview_label.clear()
         self._current_before_bgr = None
         self._current_after_bgr = None
 
@@ -374,10 +378,10 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             before_bgr = self._load_preview_source(path)
             self._current_before_bgr = before_bgr
-            self._set_label_image_fit(self.before_label, before_bgr)
+            self._set_label_image_fit(self.preview_label, before_bgr)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "预览错误", f"加载失败：{os.path.basename(path)}\n{e}")
-            self.before_label.setText("加载失败")
+            self.preview_label.setText("加载失败")
         self._request_preview_update()
 
     def on_grain_params_changed(self) -> None:
@@ -418,14 +422,18 @@ class MainWindow(QtWidgets.QMainWindow):
         path = self.list_widget.item(idx).text()
         try:
             before_bgr = self._load_preview_source(path)
-            after_bgr = self._process_preview(before_bgr)
+            if not self._should_process():
+                self._current_preview_bgr = before_bgr
+            else:
+                after_bgr = self._process_preview(before_bgr)
+                self._current_preview_bgr = after_bgr
             # If a newer request arrived, discard this result
             if local_seq != self._preview_seq:
                 return
-            self._show_previews(before_bgr, after_bgr)
+            self._refit_previews()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "预览错误", f"处理失败：{os.path.basename(path)}\n{e}")
-            self.after_label.setText("处理失败")
+            self.preview_label.setText("处理失败")
 
     def _downscale_max_side(self, bgr: np.ndarray, max_side: int) -> np.ndarray:
         h, w = bgr.shape[:2]
@@ -458,16 +466,20 @@ class MainWindow(QtWidgets.QMainWindow):
         out8 = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
         return out8
 
-    def _show_previews(self, before_bgr: np.ndarray, after_bgr: np.ndarray) -> None:
-        self._current_before_bgr = before_bgr
-        self._current_after_bgr = after_bgr
+    def _should_process(self) -> bool:
+        # If preset is '不处理' and strength==0 and all toggles off, show original
+        no_preset = (self.thread.options.preset_name == "不处理") or (self.preset_combo.currentText() == "不处理")
+        no_strength = self.thread.options.strength_percent <= 0
+        no_fx = (not self.thread.options.enable_grain) and (not self.thread.options.enable_vignette) and (not self.thread.options.enable_auto_baseline)
+        return not (no_preset and no_strength and no_fx)
+
+    def _show_preview(self, bgr: np.ndarray) -> None:
+        self._current_preview_bgr = bgr
         self._refit_previews()
 
     def _refit_previews(self) -> None:
-        if self._current_before_bgr is not None:
-            self._set_label_image_fit(self.before_label, self._current_before_bgr)
-        if self._current_after_bgr is not None:
-            self._set_label_image_fit(self.after_label, self._current_after_bgr)
+        if getattr(self, "_current_preview_bgr", None) is not None:
+            self._set_label_image_fit(self.preview_label, self._current_preview_bgr)
 
     def _set_label_image_fit(self, label: QtWidgets.QLabel, bgr: np.ndarray) -> None:
         rgb = bgr[..., ::-1].copy()
@@ -496,9 +508,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "错误", f"{os.path.basename(path)} 处理失败：{message}")
 
     def on_preview_ready(self, before: np.ndarray, after: np.ndarray) -> None:
-        # Use fit-to-view scaling, not fixed-size pixmap
-        self._current_before_bgr = before
-        self._current_after_bgr = after
+        # For batch thread preview: show processed result if applicable, else original
+        self._current_preview_bgr = after if self._should_process() else before
         self._refit_previews()
 
     # Reset controls to show original image
