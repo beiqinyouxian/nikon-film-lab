@@ -115,9 +115,9 @@ def _vignette(img: np.ndarray, strength: float) -> np.ndarray:
     cy, cx = h / 2.0, w / 2.0
     ry, rx = h / 2.0, w / 2.0
     dist = np.sqrt(((y - cy) / ry) ** 2 + ((x - cx) / rx) ** 2)
-    mask = 1.0 - np.clip(dist, 0.0, 1.0)
-    mask = mask ** (1.0 + 3.0 * strength)
-    return _clip01(img * mask[..., None] + (1 - mask[..., None]) * img * (1 - 0.15 * strength))
+    mask2d = 1.0 - np.clip(dist, 0.0, 1.0)
+    mask2d = mask2d ** (1.0 + 3.0 * strength)
+    return _clip01(img * mask2d[..., None] + (1 - mask2d[..., None]) * img * (1 - 0.15 * strength))
 
 
 class GrainType(str, Enum):
@@ -154,6 +154,38 @@ def _resize_like(noise: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
         return resized
 
 
+def _ensure_1c(arr: np.ndarray) -> np.ndarray:
+    # Return HxWx1
+    if arr.ndim == 2:
+        return arr[..., None]
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        return arr
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        # convert to luminance-like single channel
+        b, g, r = cv2.split(arr.astype(np.float32))
+        l = (0.0722 * r + 0.7152 * g + 0.2126 * b).astype(np.float32)
+        return l[..., None]
+    raise ValueError("Unsupported array shape for _ensure_1c")
+
+
+def _ensure_3c(arr: np.ndarray) -> np.ndarray:
+    # Return HxWx3
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return arr
+    if arr.ndim == 2:
+        return np.repeat(arr[..., None], 3, axis=2)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        return np.repeat(arr, 3, axis=2)
+    raise ValueError("Unsupported array shape for _ensure_3c")
+
+
+def _squeeze_1c_to_2d(arr: np.ndarray) -> np.ndarray:
+    # If HxWx1 -> HxW, else return unchanged when HxW
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        return arr[..., 0]
+    return arr
+
+
 def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
     if not params.enabled or params.density01 <= 0.0:
         return img
@@ -178,12 +210,13 @@ def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
         coarse = cv2.GaussianBlur(base, (0, 0), sigmaX=1.0 + 3.0 * params.roughness01)
         fine = rng.normal(0.0, 1.0, size=(low_h, low_w, 1)).astype(np.float32) * 0.5
         mixed = (1.0 - params.roughness01) * fine + params.roughness01 * coarse
-        noise = _resize_like(mixed, (h, w))
+        noise = _ensure_1c(_resize_like(mixed, (h, w)))
         # Apply to luminance (HSV V)
         img8 = (np.clip(img, 0, 1) * 255.0).astype(np.uint8)
         hsv = cv2.cvtColor(img8, cv2.COLOR_BGR2HSV).astype(np.float32)
         v = hsv[..., 2] / 255.0
-        v = np.clip(v + params.density01 * 0.08 * (0.75 + 0.5 * scale) * noise[..., 0], 0, 1)
+        noise2d = _squeeze_1c_to_2d(noise)
+        v = np.clip(v + params.density01 * 0.08 * (0.75 + 0.5 * scale) * noise2d, 0, 1)
         hsv[..., 2] = (v * 255.0).astype(np.float32)
         out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
         # Optional chroma noise mix
@@ -196,7 +229,7 @@ def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
     elif params.grain_type == GrainType.MODERN_FINE:
         # Fine high-frequency, low chroma
         base = rng.normal(0.0, 1.0, size=(h, w, 1)).astype(np.float32)
-        noise = cv2.GaussianBlur(base, (0, 0), sigmaX=0.6)
+        noise = _ensure_1c(cv2.GaussianBlur(base, (0, 0), sigmaX=0.6))
         out = _clip01(img + params.density01 * 0.015 * (0.7 + 0.3 * scale) * noise)
         if params.chroma_mix01 > 0.0:
             c = rng.normal(0.0, 1.0, size=(h, w, 3)).astype(np.float32)
@@ -206,8 +239,8 @@ def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
     else:  # COARSE_PUSH
         # Coarse, stronger, some chroma
         base = rng.normal(0.0, 1.0, size=(low_h, low_w, 1)).astype(np.float32)
-        noise = _resize_like(base, (h, w))
-        noise = cv2.GaussianBlur(noise, (0, 0), sigmaX=0.8 + 2.0 * params.roughness01)
+        noise = _ensure_1c(_resize_like(base, (h, w)))
+        noise = _ensure_1c(cv2.GaussianBlur(noise, (0, 0), sigmaX=0.8 + 2.0 * params.roughness01))
         out = _clip01(img + params.density01 * 0.05 * (0.8 + 0.4 * scale) * noise)
         if params.chroma_mix01 > 0.0:
             c = rng.normal(0.0, 1.0, size=(low_h, low_w, 3)).astype(np.float32)
@@ -297,7 +330,7 @@ def _build_preset(
             work = _microcontrast(work, microcontrast_amt)
         if monochrome:
             l = _luminance_bgr(work)
-            work = np.dstack([l, l, l]).astype(np.float32)
+            work = _ensure_3c(l)
         if halation > 0.0:
             # simple bloom on highlights with warm tint
             v = _luminance_bgr(work)

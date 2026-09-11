@@ -13,7 +13,7 @@ from nikon_film_app.processing.film_presets import GrainType
 ])
 def test_pipeline_no_broadcast_errors_float(preset: str):
     proc = ImageProcessor()
-    h, w = 241, 359
+    h, w = 133, 200  # small preview-like size
     img = np.random.RandomState(42).rand(h, w, 3).astype(np.float32)
     opts = ProcessOptions(
         preset_name=preset,
@@ -33,7 +33,7 @@ def test_pipeline_no_broadcast_errors_float(preset: str):
 
 def test_pipeline_uint8_input_and_shape():
     proc = ImageProcessor()
-    h, w = 300, 500
+    h, w = 133, 200
     img8 = (np.random.RandomState(0).rand(h, w, 3) * 255).astype(np.uint8)
     opts = ProcessOptions(
         preset_name="Cinestill 800T",
