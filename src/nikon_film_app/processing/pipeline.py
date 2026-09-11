@@ -266,67 +266,88 @@ class ImageProcessor:
             cv2.line(overlay, (x0, y0), (x1, y1), color, thickness=thickness, lineType=cv2.LINE_AA)
             cv2.line(alpha2d, (x0, y0), (x1, y1), opa, thickness=thickness, lineType=cv2.LINE_AA)
         # Occasional arcs (very subtle)
-        arc_n = int(1 + 2 * t)
+        arc_n = int(1 + 2 * vis)
         for _ in range(arc_n):
             if rng.random() < 0.4:
                 center = (int(rng.integers(-w // 2, w + w // 2)), int(rng.integers(-h // 2, h + h // 2)))
                 axes = (int(rng.uniform(0.5, 1.2) * w), int(rng.uniform(0.5, 1.2) * h))
                 start_angle = int(rng.uniform(0, 360))
                 end_angle = start_angle + int(rng.uniform(12, 60))
-                bright = rng.random() < 0.5
-                color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
-                opa = 0.04 + 0.08 * t
-                cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, color, thickness=1, lineType=cv2.LINE_AA)
-                cv2.ellipse(alpha2d, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
-        # Feather overall alpha a bit to avoid harshness
-        alpha2d = cv2.GaussianBlur(alpha2d, (0, 0), sigmaX=0.8)
-        alpha3 = self._ensure_3c(alpha2d)
-        out = self._clip01(img * (1.0 - alpha3) + overlay * alpha3)
+                opa = 0.03 + 0.06 * vis
+                # dark arc
+                cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, (0.0, 0.0, 0.0), thickness=1, lineType=cv2.LINE_AA)
+                cv2.ellipse(dark_alpha, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
+                # bright arc
+                cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, (1.0, 1.0, 1.0), thickness=1, lineType=cv2.LINE_AA)
+                cv2.ellipse(spec_alpha, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
+        # Blur alphas a touch
+        dark_alpha = cv2.GaussianBlur(dark_alpha, (0, 0), sigmaX=0.8)
+        spec_alpha = cv2.GaussianBlur(spec_alpha, (0, 0), sigmaX=0.8)
+        # Modulate specular by scene highlights (stronger on bright areas)
+        spec_alpha = np.clip(spec_alpha * (0.25 + 0.85 * hi), 0.0, 1.0)
+        # Compose: dark grooves subtract, bright streaks add (screen approximation)
+        dark3 = self._ensure_3c(dark_alpha)
+        spec3 = self._ensure_3c(spec_alpha)
+        base = img * (1.0 - 0.9 * dark3)  # slight darkening where grooves present
+        # Screen blend for specular: out = 1 - (1-a)*(1-b)
+        spec_col = np.array([1.0, 1.0, 1.0], dtype=np.float32)[None, None, :]
+        screen = 1.0 - (1.0 - base) * (1.0 - 0.85 * spec3 * spec_col)
+        out = self._clip01(screen)
+        # Very soft haze along scratches
+        haze = cv2.GaussianBlur(out, (0, 0), sigmaX=2.0)
+        haze_amt = 0.12 * vis
+        out = self._clip01(out * (1.0 - haze_amt * spec3) + haze * (haze_amt * spec3))
         return out
 
     def _expired_film(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
-        """Expired film look: dye fade, muddy shadows, lifted blacks, color cast, slight mottling."""
+        """Expired film look: lifted blacks, narrowed DR, color cast, dye-fade mottling."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 1)
+        vis = float(np.power(t, 0.75))
         out = img.astype(np.float32).copy()
-        # Base fog (lift blacks)
-        fog = 0.04 + 0.10 * t
-        out = self._clip01(out * (1.0 - 0.5 * t) + fog)
-        # Mild overall saturation loss
-        out = _adjust_saturation(out, -0.25 * t)
-        # Cross-process style color shift (random green-magenta or warm)
+        # Base fog & DR compression
+        fog = 0.05 + 0.14 * vis
+        out = self._clip01(out * (1.0 - 0.55 * vis) + fog)
+        out = _adjust_contrast(out, -0.25 * vis)
+        # Slight highlight clamp (rolloff)
+        out = self._clip01(1.0 - (1.0 - out) * (1.0 - 0.08 * vis))
+        # Mild saturation drop (midtone focus)
+        out = _adjust_saturation(out, -0.30 * vis)
+        # Cross-process style channel cast (seeded)
         if rng.random() < 0.5:
-            cast = np.array([0.00, 0.03 + 0.10 * t, 0.06 * t], dtype=np.float32)[None, None, :]  # BGR ~ cyan/green
+            cast = np.array([0.00, 0.05 + 0.12 * vis, 0.08 * vis], dtype=np.float32)[None, None, :]  # cyan/green
         else:
-            cast = np.array([0.02 + 0.08 * t, 0.02 * t, 0.00], dtype=np.float32)[None, None, :]  # warm
+            cast = np.array([0.04 + 0.10 * vis, 0.03 * vis, 0.00], dtype=np.float32)[None, None, :]  # warm
         out = self._clip01(out + cast)
-        # Lower contrast a bit and muddy shadows (lift)
-        out = _adjust_contrast(out, -0.20 * t)
-        out = self._clip01(out + (0.08 * t) * (1.0 - self._radial_mask(h, w))[..., None] * 0.5)
-        # Uneven dye fade via low-frequency color noise
+        # Shadows slightly cooler/muddy
+        y = _luminance_bgr(out)
+        sh = np.clip((0.45 - y) / 0.45, 0.0, 1.0)[..., None]
+        out = self._clip01(out + sh * np.array([0.02, 0.00, 0.03], dtype=np.float32)[None, None, :] * (0.6 * vis))
+        # Uneven dye fade via low-frequency color noise on chroma
         noise = rng.normal(0.0, 1.0, size=(h, w, 3)).astype(np.float32)
-        low = cv2.GaussianBlur(noise, (0, 0), sigmaX=18.0)
-        out = self._clip01(out + 0.04 * t * low)
+        low = cv2.GaussianBlur(noise, (0, 0), sigmaX=14.0)
+        out = self._clip01(out + 0.06 * vis * low)
         # Sparse fine dust at very low opacity
         specks = np.zeros((h, w), dtype=np.float32)
-        n = int(20 * t)
+        n = int(24 * vis)
         for _ in range(n):
             cx = int(rng.integers(0, w))
             cy = int(rng.integers(0, h))
-            r = int(max(1, rng.integers(1, 2 + int(2 * t))))
+            r = int(max(1, rng.integers(1, 2 + int(2 * vis))))
             cv2.circle(specks, (cx, cy), r, color=1.0, thickness=-1, lineType=cv2.LINE_AA)
         specks = cv2.GaussianBlur(specks, (0, 0), sigmaX=0.6)
-        out = self._clip01(out * (1.0 - 0.06 * t * self._ensure_3c(specks)))
+        out = self._clip01(out * (1.0 - 0.05 * vis * self._ensure_3c(specks)))
         return out
 
     def _light_leak(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
-        """Analog-like light leak from edges/corners with organic shapes and warm/magenta casts."""
+        """Analog-like light leak: asymmetric corner pools + edge bands, vivid yet soft."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 2)
+        vis = float(np.power(t, 0.75))
         out = img.copy()
         # Base edge distance
         y, x = np.ogrid[:h, :w]
@@ -334,31 +355,44 @@ class ImageProcessor:
         dist_right = (w - 1 - x) / max(1, w - 1)
         dist_top = y / max(1, h - 1)
         dist_bottom = (h - 1 - y) / max(1, h - 1)
-        dists = [dist_left, dist_right, dist_top, dist_bottom]
-        # Pick 1-2 edges
-        edges = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
-        mask2d = np.zeros((h, w), dtype=np.float32)
-        for e in edges:
-            d = dists[e].astype(np.float32)
-            # Organic shape via thresholded blurred noise multiplied by distance falloff
-            shape = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
-            shape = cv2.GaussianBlur(shape, (0, 0), sigmaX=8.0 + 12.0 * t)
-            shape = (shape - shape.min()) / max(1e-6, shape.max() - shape.min())
-            fall = np.exp(-4.0 * d)
-            mask2d = np.maximum(mask2d, (shape * fall).astype(np.float32))
-        mask2d = cv2.GaussianBlur(mask2d, (0, 0), sigmaX=6.0)
-        mask2d = np.clip(mask2d, 0.0, 1.0)
-        # Warm or magenta cast
-        if rng.random() < 0.75:
-            color = np.array([0.06, 0.10 + 0.25 * t, 0.01], dtype=np.float32)  # warm/orange (BGR)
-        else:
-            color = np.array([0.12, 0.02, 0.10 + 0.20 * t], dtype=np.float32)  # cool magenta
-        mask3 = self._ensure_3c(mask2d ** (1.2))
-        strength = 0.20 + 0.60 * t
-        out = self._clip01(out + strength * mask3 * color[None, None, :])
-        # Subtle bloom on strong mask areas
+        # Layer 1: asymmetric corner pools with cubic falloff
+        corners = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+        corner_ids = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
+        pool = np.zeros((h, w), dtype=np.float32)
+        diag = float(np.sqrt(h * h + w * w))
+        for cid in corner_ids:
+            cy, cx = corners[cid]
+            d = np.sqrt(((y - cy) ** 2 + (x - cx) ** 2)) / (0.65 * diag)
+            pool = np.maximum(pool, np.clip(1.0 - d, 0.0, 1.0) ** 3)
+        # Layer 2: edge bands using squared-sine hugging edges
+        bands = np.zeros((h, w), dtype=np.float32)
+        v = np.minimum(dist_top, dist_bottom).astype(np.float32)
+        u = (x / max(1, w - 1)).astype(np.float32)
+        freq = 3.0 + 2.0 * vis
+        phase = float(rng.uniform(0, 2 * np.pi))
+        bands_h = (np.sin(2 * np.pi * freq * u + phase) ** 2) * (np.clip(1.0 - v, 0.0, 1.0) ** 2)
+        v2 = np.minimum(dist_left, dist_right).astype(np.float32)
+        u2 = (y / max(1, h - 1)).astype(np.float32)
+        phase2 = float(rng.uniform(0, 2 * np.pi))
+        bands_v = (np.sin(2 * np.pi * freq * u2 + phase2) ** 2) * (np.clip(1.0 - v2, 0.0, 1.0) ** 2)
+        bands = np.clip(bands_h + bands_v, 0.0, 1.0)
+        # Combine and blur slightly
+        mask2d = np.clip(0.65 * pool + 0.45 * bands, 0.0, 1.0)
+        mask2d = cv2.GaussianBlur(mask2d, (0, 0), sigmaX=4.0)
+        # Color palette (warm dominant)
+        palette = [
+            np.array([0.06, 0.14, 0.02], dtype=np.float32),  # amber
+            np.array([0.04, 0.12, 0.00], dtype=np.float32),  # warm yellow
+            np.array([0.10, 0.06, 0.10], dtype=np.float32),  # warm-magenta mix
+        ]
+        color = palette[int(rng.integers(0, len(palette)))]
+        mask3 = self._ensure_3c(mask2d ** 1.1)
+        # Screen-like additive
+        amt = 0.18 + 0.75 * vis
+        out = 1.0 - (1.0 - out) * (1.0 - amt * mask3 * color[None, None, :])
+        # Bloom into highlights
         glow = cv2.GaussianBlur(out, (0, 0), sigmaX=3.0)
-        out = self._clip01(out * (1.0 - 0.25 * t * mask3) + glow * (0.25 * t * mask3))
+        out = self._clip01(out * (1.0 - 0.25 * vis * mask3) + glow * (0.25 * vis * mask3))
         return out
 
     def _apply_special_fx(self, img: np.ndarray, options: ProcessOptions) -> np.ndarray:

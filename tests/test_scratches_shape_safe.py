@@ -31,4 +31,4 @@ def test_scratches_shape_safe_and_effect_applies():
     out = proc.process_bgr01(img, opts)
     assert out.shape == img.shape
     diff = float(np.abs(out - img).mean())
-    assert diff > 1e-4
+    assert diff > 3e-3
