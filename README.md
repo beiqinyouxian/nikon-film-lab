@@ -85,6 +85,12 @@ pytest -q
 - Auto tries OpenCL via OpenCV (UMat). If unavailable, falls back to CPU.
 - Preview uses downscaled display only; export keeps source full resolution.
 
+**预览性能与显示**
+- 左侧选择任意队列条目，会立即在右侧显示该照片的全幅（按窗口自适应比例缩放，非裁剪）
+- 预览采用降采样副本（最长边约 1600px）进行实时渲染，提升交互流畅度
+- 滑动强度/切换预设/勾选选项时，使用约 200ms 防抖并丢弃过期请求，避免卡顿
+- 导出始终基于原始全分辨率图像（预览仅用于加速显示）
+
 ### Windows 可执行文件（.exe）
 
 **从 GitHub Actions 下载**

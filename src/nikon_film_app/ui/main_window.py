@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -122,12 +122,23 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Nikon Film Lab")
         self.thread = ProcessorThread()
+        self.preview_max_side = 1600
+        self.preview_cache: Dict[str, np.ndarray] = {}
+        self._current_before_bgr: Optional[np.ndarray] = None
+        self._current_after_bgr: Optional[np.ndarray] = None
+        self.preview_timer = QtCore.QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(200)  # debounce ~200ms
+        self.preview_timer.timeout.connect(self._render_preview)
+        self._preview_seq = 0
 
         # UI
         self.before_label = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
         self.after_label = QtWidgets.QLabel(alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
         self.before_label.setMinimumSize(200, 200)
         self.after_label.setMinimumSize(200, 200)
+        self.before_label.setScaledContents(False)
+        self.after_label.setScaledContents(False)
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -210,6 +221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clear_btn.clicked.connect(self.on_clear)
         self.export_btn.clicked.connect(self.on_pick_export)
         self.list_widget.files_dropped.connect(self.on_files_dropped)
+        self.list_widget.itemSelectionChanged.connect(self.on_selection_changed)
         self.process_btn.clicked.connect(self.on_process)
         self.cancel_btn.clicked.connect(self.on_cancel)
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
@@ -225,10 +237,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_files_dropped(self, paths: List[str]) -> None:
         self._add_paths(paths)
+        self._request_preview_update()
 
     def on_add_files(self) -> None:
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择文件", "", "Images (*.nef *.NEF *.jpg *.jpeg)")
         self._add_paths(files)
+        self._request_preview_update()
 
     def on_add_dir(self) -> None:
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹", "")
@@ -241,6 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if is_supported(fp):
                     paths.append(fp)
         self._add_paths(paths)
+        self._request_preview_update()
 
     def _add_paths(self, paths: List[str]) -> None:
         for p in paths:
@@ -248,11 +263,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             item = QtWidgets.QListWidgetItem(p)
             self.list_widget.addItem(item)
+        # Select the last added item to show immediate preview
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
     def on_clear(self) -> None:
         self.list_widget.clear()
         self.before_label.clear()
         self.after_label.clear()
+        self._current_before_bgr = None
+        self._current_after_bgr = None
 
     def on_pick_export(self) -> None:
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择导出文件夹", self.export_dir())
@@ -291,21 +311,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_preset_changed(self, name: str) -> None:
         self.thread.options.preset_name = name
-        self._update_preview_first()
+        self._request_preview_update()
 
     def on_strength_changed(self, value: int) -> None:
         self.thread.options.strength_percent = value
-        self._update_preview_first()
+        self._request_preview_update()
 
     def on_flags_changed(self) -> None:
         self.thread.options.enable_grain = self.grain_check.isChecked()
         self.thread.options.enable_vignette = self.vignette_check.isChecked()
         self.thread.options.enable_auto_baseline = self.auto_check.isChecked()
-        self._update_preview_first()
+        self._request_preview_update()
 
     def on_backend_changed(self, text: str) -> None:
         mode = BackendMode(text)
         self.thread.set_backend(mode)
+        self._request_preview_update()
+
+    def on_selection_changed(self) -> None:
+        self._request_preview_update()
+
+    def _request_preview_update(self) -> None:
+        # debounce preview updates
+        self._preview_seq += 1
+        self.preview_timer.start()
 
     def _update_preview_first(self) -> None:
         # Update preview on current selection or first item
@@ -316,20 +345,81 @@ class MainWindow(QtWidgets.QMainWindow):
             idx = 0
         path = self.list_widget.item(idx).text()
         try:
-            ext = os.path.splitext(path)[1].lower()
-            if ext in (".jpg", ".jpeg"):
-                r = load_jpeg_bgr8(path)
-                src = r.image_bgr8
-            else:
-                r2 = load_nef_to_bgr8(path)
-                src = r2.image_bgr8
-            img = src.astype(np.float32) / 255.0
-            out = self.thread.processor.process_bgr01(img, self.thread.options)
-            out8 = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-            self.before_label.setPixmap(bgr_to_qpixmap(src))
-            self.after_label.setPixmap(bgr_to_qpixmap(out8))
+            before_bgr = self._load_preview_source(path)
+            after_bgr = self._process_preview(before_bgr)
+            self._show_previews(before_bgr, after_bgr)
         except Exception:
             pass
+
+    def _render_preview(self) -> None:
+        local_seq = self._preview_seq
+        if self.list_widget.count() == 0:
+            return
+        idx = self.list_widget.currentRow()
+        if idx < 0:
+            idx = 0
+        path = self.list_widget.item(idx).text()
+        try:
+            before_bgr = self._load_preview_source(path)
+            after_bgr = self._process_preview(before_bgr)
+            # If a newer request arrived, discard this result
+            if local_seq != self._preview_seq:
+                return
+            self._show_previews(before_bgr, after_bgr)
+        except Exception:
+            pass
+
+    def _downscale_max_side(self, bgr: np.ndarray, max_side: int) -> np.ndarray:
+        h, w = bgr.shape[:2]
+        scale = min(1.0, max_side / max(h, w))
+        if scale >= 1.0:
+            return bgr
+        new_w, new_h = int(w * scale), int(h * scale)
+        return cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    def _load_preview_source(self, path: str) -> np.ndarray:
+        cached = self.preview_cache.get(path)
+        if cached is not None:
+            return cached
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".jpg", ".jpeg"):
+            r = load_jpeg_bgr8(path)
+            src = r.image_bgr8
+        else:
+            r2 = load_nef_to_bgr8(path)
+            src = r2.image_bgr8
+        preview = self._downscale_max_side(src, self.preview_max_side)
+        self.preview_cache[path] = preview
+        return preview
+
+    def _process_preview(self, bgr8: np.ndarray) -> np.ndarray:
+        img = bgr8.astype(np.float32) / 255.0
+        out = self.thread.processor.process_bgr01(img, self.thread.options)
+        out8 = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        return out8
+
+    def _show_previews(self, before_bgr: np.ndarray, after_bgr: np.ndarray) -> None:
+        self._current_before_bgr = before_bgr
+        self._current_after_bgr = after_bgr
+        self._refit_previews()
+
+    def _refit_previews(self) -> None:
+        if self._current_before_bgr is not None:
+            self._set_label_image_fit(self.before_label, self._current_before_bgr)
+        if self._current_after_bgr is not None:
+            self._set_label_image_fit(self.after_label, self._current_after_bgr)
+
+    def _set_label_image_fit(self, label: QtWidgets.QLabel, bgr: np.ndarray) -> None:
+        rgb = bgr[..., ::-1].copy()
+        h2, w2 = rgb.shape[:2]
+        qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888)
+        pix = QtGui.QPixmap.fromImage(qimg)
+        scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+        label.setPixmap(scaled)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._refit_previews()
 
     def on_progress(self, cur: int, total: int) -> None:
         self.progress.setMaximum(total)
