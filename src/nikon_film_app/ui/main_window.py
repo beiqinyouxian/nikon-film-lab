@@ -63,6 +63,8 @@ class ProcessorThread(QtCore.QThread):
             enable_auto_baseline=False,
             exposure_ev_x100=0,
             temp_bias=0,
+            clarity=0,
+            contrast=0,
         )
         self.export_dir = os.getcwd()
         self.backend = BackendMode.AUTO
@@ -180,13 +182,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_type.addItems([GrainType.SILVER_HALIDE.value, GrainType.MODERN_FINE.value, GrainType.COARSE_PUSH.value])
         self.grain_size = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.grain_size.setRange(0, 100)
-        self.grain_size.setValue(30)
+        self.grain_size.setValue(0)
         self.grain_density = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.grain_density.setRange(0, 100)
-        self.grain_density.setValue(40)
+        self.grain_density.setValue(0)
         self.grain_rough = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.grain_rough.setRange(0, 100)
-        self.grain_rough.setValue(40)
+        self.grain_rough.setValue(0)
         self.grain_chroma = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.grain_chroma.setRange(0, 100)
         self.grain_chroma.setValue(0)
@@ -195,17 +197,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vignette_mode.setCurrentIndex(0)
         self.vignette_amount = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.vignette_amount.setRange(0, 100)
-        self.vignette_amount.setValue(30)
+        self.vignette_amount.setValue(0)
         self.vignette_amount.setEnabled(False)
+        def _bipolar(slider: QtWidgets.QSlider, lo: int, hi: int) -> None:
+            slider.setRange(lo, hi)
+            slider.setValue(0)
+            slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+            slider.setTickInterval(max(1, (hi - lo) // 4))
+
         self.exposure_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.exposure_slider.setRange(-200, 200)  # -2.00 .. +2.00 EV (x100)
-        self.exposure_slider.setValue(0)
+        _bipolar(self.exposure_slider, -200, 200)  # -2.00 .. +2.00 EV (x100), center 0
         self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.temp_slider.setRange(-100, 100)
-        self.temp_slider.setValue(0)
+        _bipolar(self.temp_slider, -100, 100)  # cooler .. warmer, center 0
         self.clarity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.clarity_slider.setRange(-50, 100)
-        self.clarity_slider.setValue(0)
+        _bipolar(self.clarity_slider, -100, 100)  # softer .. clearer, center 0
+        self.contrast_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        _bipolar(self.contrast_slider, -100, 100)  # flatter .. punchier, center 0
         self.auto_check = QtWidgets.QCheckBox("自动基线（曝光/色温）")
         self.auto_check.setChecked(False)
 
@@ -257,6 +264,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("暗角强度：", self.vignette_amount)
         form.addRow("曝光 (EV)：", self.exposure_slider)
         form.addRow("色温：", self.temp_slider)
+        form.addRow("对比度：", self.contrast_slider)
         form.addRow("清晰度：", self.clarity_slider)
         form.addRow("", self.auto_check)
         form.addRow("后端：", self.backend_combo)
@@ -323,6 +331,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exposure_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.temp_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.clarity_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.contrast_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
@@ -460,6 +469,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.exposure_ev_x100 = self.exposure_slider.value()
         self.thread.options.temp_bias = self.temp_slider.value()
         self.thread.options.clarity = self.clarity_slider.value()
+        self.thread.options.contrast = self.contrast_slider.value()
         self._request_preview_update()
 
     def on_backend_changed(self, text: str) -> None:
@@ -574,7 +584,8 @@ class MainWindow(QtWidgets.QMainWindow):
         no_exposure = (getattr(self.thread.options, "exposure_ev_x100", 0) == 0)
         no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
         no_clarity = (getattr(self.thread.options, "clarity", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity
+        no_contrast = (getattr(self.thread.options, "contrast", 0) == 0)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -631,6 +642,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exposure_slider.setValue(0)
         self.temp_slider.setValue(0)
         self.clarity_slider.setValue(0)
+        self.contrast_slider.setValue(0)
         self.auto_check.setChecked(False)
         self.grain_size.setValue(0)
         self.grain_density.setValue(0)
@@ -651,6 +663,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.exposure_ev_x100 = 0
         self.thread.options.temp_bias = 0
         self.thread.options.clarity = 0
+        self.thread.options.contrast = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
