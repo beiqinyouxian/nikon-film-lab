@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 # Collect all data/binaries/hiddenimports for critical packages
@@ -16,11 +17,14 @@ for pkg in ("PySide6", "cv2", "rawpy"):
 block_cipher = None
 
 app_name = "NikonFilmLab"
-entry_script = os.path.join("src", "nikon_film_app", "main.py")
+# Resolve repo root relative to this spec file (which lives in packaging/)
+SPEC_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SPEC_DIR.parent
+entry_script = str(REPO_ROOT / "src" / "nikon_film_app" / "main.py")
 
 a = Analysis(
     [entry_script],
-    pathex=["."],
+    pathex=[str(REPO_ROOT)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
