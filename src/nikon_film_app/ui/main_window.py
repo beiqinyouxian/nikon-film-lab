@@ -190,8 +190,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_chroma = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.grain_chroma.setRange(0, 100)
         self.grain_chroma.setValue(0)
-        self.vignette_check = QtWidgets.QCheckBox("暗角")
-        self.vignette_check.setChecked(False)
+        self.vignette_mode = QtWidgets.QComboBox()
+        self.vignette_mode.addItems(["不处理", "自动", "手动"])
+        self.vignette_mode.setCurrentIndex(0)
+        self.vignette_amount = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.vignette_amount.setRange(0, 100)
+        self.vignette_amount.setValue(30)
+        self.vignette_amount.setEnabled(False)
+        self.exposure_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.exposure_slider.setRange(-200, 200)  # -2.00 .. +2.00 EV (x100)
+        self.exposure_slider.setValue(0)
+        self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.temp_slider.setRange(-100, 100)
+        self.temp_slider.setValue(0)
+        self.clarity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.clarity_slider.setRange(-50, 100)
+        self.clarity_slider.setValue(0)
         self.auto_check = QtWidgets.QCheckBox("自动基线（曝光/色温）")
         self.auto_check.setChecked(False)
 
@@ -226,13 +240,11 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(QtWidgets.QLabel("进度："))
         left.addWidget(self.progress)
 
-        right = QtWidgets.QVBoxLayout()
-        right.addWidget(self.preview_label, 1)
+        # Params panel (scrollable)
         form = QtWidgets.QFormLayout()
         form.addRow("预设：", self.preset_combo)
         form.addRow("强度：", self.strength_slider)
         form.addRow("", self.grain_check)
-        form.addRow("", self.vignette_check)
         grain_box = QtWidgets.QGroupBox("颗粒参数")
         grain_form = QtWidgets.QFormLayout(grain_box)
         grain_form.addRow("类型：", self.grain_type)
@@ -240,27 +252,53 @@ class MainWindow(QtWidgets.QMainWindow):
         grain_form.addRow("密度：", self.grain_density)
         grain_form.addRow("粗糙：", self.grain_rough)
         grain_form.addRow("彩色混合：", self.grain_chroma)
-        right.addWidget(grain_box)
+        form.addRow(grain_box)
+        form.addRow("暗角：", self.vignette_mode)
+        form.addRow("暗角强度：", self.vignette_amount)
+        form.addRow("曝光 (EV)：", self.exposure_slider)
+        form.addRow("色温：", self.temp_slider)
+        form.addRow("清晰度：", self.clarity_slider)
         form.addRow("", self.auto_check)
         form.addRow("后端：", self.backend_combo)
-        right.addLayout(form)
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
-        right.addLayout(btns)
-        right.addWidget(QtWidgets.QLabel("提示：预览为单图等比适配；导出始终为原始全分辨率。"))
+        params_outer = QtWidgets.QVBoxLayout()
+        params_outer.addLayout(form)
+        params_outer.addLayout(btns)
+        params_outer.addWidget(QtWidgets.QLabel("提示：拖动中间分隔条可调预览/参数栏大小；导出始终全分辨率。"))
+        params_widget = QtWidgets.QWidget()
+        params_widget.setLayout(params_outer)
+        params_scroll = QtWidgets.QScrollArea()
+        params_scroll.setWidgetResizable(True)
+        params_scroll.setWidget(params_widget)
+        params_scroll.setMinimumHeight(120)
 
-        root = QtWidgets.QSplitter()
+        preview_wrap = QtWidgets.QWidget()
+        preview_layout = QtWidgets.QVBoxLayout(preview_wrap)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.addWidget(self.preview_label)
+
+        self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.right_splitter.addWidget(preview_wrap)
+        self.right_splitter.addWidget(params_scroll)
+        self.right_splitter.setChildrenCollapsible(False)
+        self.right_splitter.setStretchFactor(0, 3)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setSizes([480, 280])
+
         lw = QtWidgets.QWidget()
-        rw = QtWidgets.QWidget()
         lw.setLayout(left)
-        rw.setLayout(right)
-        root.addWidget(lw)
-        root.addWidget(rw)
-        root.setStretchFactor(0, 0)
-        root.setStretchFactor(1, 1)
-        self.setCentralWidget(root)
+        self.root_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.root_splitter.addWidget(lw)
+        self.root_splitter.addWidget(self.right_splitter)
+        self.root_splitter.setChildrenCollapsible(False)
+        self.root_splitter.setStretchFactor(0, 0)
+        self.root_splitter.setStretchFactor(1, 1)
+        self.root_splitter.setSizes([280, 900])
+        self.setCentralWidget(self.root_splitter)
+        self._restore_splitters()
 
         # Signals
         self.add_btn.clicked.connect(self.on_add_files)
@@ -280,7 +318,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_density.valueChanged.connect(self.on_grain_params_changed)
         self.grain_rough.valueChanged.connect(self.on_grain_params_changed)
         self.grain_chroma.valueChanged.connect(self.on_grain_params_changed)
-        self.vignette_check.toggled.connect(self.on_flags_changed)
+        self.vignette_mode.currentIndexChanged.connect(self.on_vignette_mode_changed)
+        self.vignette_amount.valueChanged.connect(self.on_manual_adjust_changed)
+        self.exposure_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.temp_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.clarity_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
@@ -400,9 +442,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_flags_changed(self) -> None:
         self.thread.options.enable_grain = self.grain_check.isChecked()
-        # Checkbox maps to auto vignette until dedicated mode UI is wired
-        self.thread.options.vignette_mode = "auto" if self.vignette_check.isChecked() else "off"
         self.thread.options.enable_auto_baseline = self.auto_check.isChecked()
+        self._request_preview_update()
+
+    def on_vignette_mode_changed(self, _idx: int = 0) -> None:
+        mode_text = self.vignette_mode.currentText()
+        mapping = {"不处理": "off", "自动": "auto", "手动": "manual"}
+        mode = mapping.get(mode_text, "off")
+        self.thread.options.vignette_mode = mode
+        self.vignette_amount.setEnabled(mode == "manual")
+        if mode == "manual":
+            self.thread.options.vignette_amount = self.vignette_amount.value()
+        self._request_preview_update()
+
+    def on_manual_adjust_changed(self, _value: int = 0) -> None:
+        self.thread.options.vignette_amount = self.vignette_amount.value()
+        self.thread.options.exposure_ev_x100 = self.exposure_slider.value()
+        self.thread.options.temp_bias = self.temp_slider.value()
+        self.thread.options.clarity = self.clarity_slider.value()
         self._request_preview_update()
 
     def on_backend_changed(self, text: str) -> None:
@@ -516,7 +573,8 @@ class MainWindow(QtWidgets.QMainWindow):
         no_vignette = (getattr(self.thread.options, "vignette_mode", "off") == "off")
         no_exposure = (getattr(self.thread.options, "exposure_ev_x100", 0) == 0)
         no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp
+        no_clarity = (getattr(self.thread.options, "clarity", 0) == 0)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -565,10 +623,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # Reset controls to show original image
     def on_reset(self) -> None:
-        # Reset UI controls that exist today to neutral / 不处理
         self.strength_slider.setValue(0)
         self.grain_check.setChecked(False)
-        self.vignette_check.setChecked(False)
+        self.vignette_mode.setCurrentIndex(0)
+        self.vignette_amount.setValue(0)
+        self.vignette_amount.setEnabled(False)
+        self.exposure_slider.setValue(0)
+        self.temp_slider.setValue(0)
+        self.clarity_slider.setValue(0)
         self.auto_check.setChecked(False)
         self.grain_size.setValue(0)
         self.grain_density.setValue(0)
@@ -588,6 +650,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.grain_chroma_mix = 0
         self.thread.options.exposure_ev_x100 = 0
         self.thread.options.temp_bias = 0
+        self.thread.options.clarity = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
