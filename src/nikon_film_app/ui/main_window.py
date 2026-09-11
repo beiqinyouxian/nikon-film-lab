@@ -597,9 +597,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_label_image_fit(self.preview_label, self._current_preview_bgr)
 
     def _set_label_image_fit(self, label: QtWidgets.QLabel, bgr: np.ndarray) -> None:
-        rgb = bgr[..., ::-1].copy()
+        rgb = np.ascontiguousarray(bgr[..., ::-1])
         h2, w2 = rgb.shape[:2]
-        qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888)
+        bytes_per_line = 3 * w2
+        qimg = QtGui.QImage(rgb.data, w2, h2, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
         pix = QtGui.QPixmap.fromImage(qimg)
         scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
         label.setPixmap(scaled)
