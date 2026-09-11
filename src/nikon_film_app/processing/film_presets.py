@@ -153,6 +153,41 @@ def _adjust_saturation(img: np.ndarray, saturation: float) -> np.ndarray:
     return out.astype(np.float32) / 255.0
 
 
+def _apply_highlights_shadows(img: np.ndarray, highlights: float, shadows: float) -> np.ndarray:
+    """highlights/shadows in [-1,1]. Positive highlights brighten highs; positive shadows lift darks."""
+    if abs(highlights) < 1e-6 and abs(shadows) < 1e-6:
+        return img
+    y = _luminance_bgr(img)
+    # Smooth masks
+    hmask = np.clip((y - 0.55) / 0.45, 0.0, 1.0) ** 1.2
+    smask = np.clip((0.45 - y) / 0.45, 0.0, 1.0) ** 1.2
+    out = img.astype(np.float32, copy=True)
+    if abs(highlights) > 1e-6:
+        # positive: lift highlights; negative: compress/darken highlights
+        out = out + (0.35 * highlights) * hmask[..., None]
+    if abs(shadows) > 1e-6:
+        out = out + (0.35 * shadows) * smask[..., None]
+    return _clip01(out)
+
+
+def _apply_vibrance(img: np.ndarray, vibrance: float) -> np.ndarray:
+    """Vibrance in [-1,1]: boosts low-saturation colors more than already-vivid ones."""
+    if abs(vibrance) < 1e-6:
+        return img
+    img8 = (np.clip(img, 0, 1) * 255.0).astype(np.uint8)
+    hsv = cv2.cvtColor(img8, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+    s01 = s / 255.0
+    # Weight: stronger on less saturated pixels
+    w = 1.0 - s01
+    s2 = np.clip(s01 + vibrance * 0.55 * w * s01.clip(0.05, 1.0), 0.0, 1.0)
+    s = (s2 * 255.0).astype(np.uint8)
+    out = cv2.cvtColor(cv2.merge([h.astype(np.uint8), s, v.astype(np.uint8)]), cv2.COLOR_HSV2BGR)
+    return out.astype(np.float32) / 255.0
+
+
+
+
 def _vignette(img: np.ndarray, strength: float) -> np.ndarray:
     if strength <= 0.0:
         return img
@@ -372,6 +407,10 @@ def _build_preset(
         temp01: float,
         clarity: float,
         user_contrast: float = 0.0,
+        highlights: float = 0.0,
+        shadows: float = 0.0,
+        vibrance: float = 0.0,
+        user_saturation: float = 0.0,
     ) -> np.ndarray:
         work = img.copy()
         if auto_base:
@@ -416,6 +455,12 @@ def _build_preset(
         # User contrast slider (center 0): applied after film look, before blend
         if abs(user_contrast) > 1e-6:
             work = _adjust_contrast(work, 0.8 * user_contrast)
+        if abs(highlights) > 1e-6 or abs(shadows) > 1e-6:
+            work = _apply_highlights_shadows(work, highlights, shadows)
+        if abs(vibrance) > 1e-6:
+            work = _apply_vibrance(work, vibrance)
+        if abs(user_saturation) > 1e-6:
+            work = _adjust_saturation(work, 0.7 * user_saturation)
         return _blend(img, work, strength01)
 
     return FilmPreset(name=name, process=proc)
