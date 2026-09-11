@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from .accelerator import Accelerator, BackendMode
-from .film_presets import get_presets
+from .film_presets import get_presets, GrainParams, GrainType
 
 
 @dataclass
@@ -15,6 +15,12 @@ class ProcessOptions:
     preset_name: str
     strength_percent: int = 100  # 0..100
     enable_grain: bool = True
+    grain_type: GrainType = GrainType.SILVER_HALIDE
+    grain_size: int = 30          # 0..100
+    grain_density: int = 30       # 0..100
+    grain_roughness: int = 40     # 0..100
+    grain_chroma_mix: int = 0     # 0..100
+    grain_seed: Optional[int] = None
     enable_vignette: bool = False
     enable_auto_baseline: bool = True
 
@@ -41,13 +47,23 @@ class ImageProcessor:
         preset = self.presets.get(options.preset_name)
         if preset is None:
             return img
+        grain = GrainParams(
+            enabled=options.enable_grain,
+            grain_type=options.grain_type,
+            size01=max(0.0, min(1.0, options.grain_size / 100.0)),
+            density01=max(0.0, min(1.0, options.grain_density / 100.0)),
+            roughness01=max(0.0, min(1.0, options.grain_roughness / 100.0)),
+            chroma_mix01=max(0.0, min(1.0, options.grain_chroma_mix / 100.0)),
+            seed=options.grain_seed,
+        )
         out = preset.process(
             img,
             self.accel,
             strength01,
-            options.enable_grain,
+            grain,
             options.enable_vignette,
             options.enable_auto_baseline,
+            options.grain_seed,
         )
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 

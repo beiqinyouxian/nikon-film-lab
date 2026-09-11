@@ -54,6 +54,9 @@ Desktop app: Nikon RAW/JPG film-look stylization with CPU/OpenCL acceleration
 - Cinestill 800T
 - Agfa Vista
 - Kodak Tri-X（黑白）
+- Leica Color Modern（类徕卡现代色：微暖、中等对比、克制饱和）
+- Leica Classic Mono（类徕卡 Monochrom：深邃黑白、银盐质感）
+- Leica Chrome Vivid（类徕卡街头浓郁色）
 
 **测试**
 ```bash
@@ -90,6 +93,13 @@ pytest -q
 - 预览采用降采样副本（最长边约 1600px）进行实时渲染，提升交互流畅度
 - 滑动强度/切换预设/勾选选项时，使用约 200ms 防抖并丢弃过期请求，避免卡顿
 - 导出始终基于原始全分辨率图像（预览仅用于加速显示）
+
+**颗粒（Grain）控制**
+- 类型：银盐（单色、结团感）、Modern fine（现代细腻）、Coarse push（粗颗粒，似推片）
+- 大小：控制颗粒的空间尺度（分辨率自适应；预览与导出一致感）
+- 密度：控制颗粒强度/覆盖度
+- 粗糙：控制结团/粗糙程度
+- 彩色混合：控制彩色颗粒参与度（0 为纯亮度颗粒）
 
 ### Windows 可执行文件（.exe）
 

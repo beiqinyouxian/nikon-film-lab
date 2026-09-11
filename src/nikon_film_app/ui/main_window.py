@@ -7,9 +7,11 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
+import zlib
 
 from nikon_film_app.processing.accelerator import Accelerator, BackendMode
 from nikon_film_app.processing.pipeline import ImageProcessor, ProcessOptions
+from nikon_film_app.processing.film_presets import GrainType
 from nikon_film_app.io.jpeg_utils import load_jpeg_bgr8, save_jpeg_bgr8
 from nikon_film_app.io.raw_loader import load_nef_to_bgr8
 
@@ -67,6 +69,8 @@ class ProcessorThread(QtCore.QThread):
                 break
             try:
                 self.progress_changed.emit(idx, total)
+                # Deterministic grain per file
+                self.options.grain_seed = zlib.adler32(item.path.encode("utf-8")) & 0xFFFFFFFF
                 out = self._process_bgr(item.src_bgr8)
                 # Save
                 base = os.path.basename(item.path)
@@ -161,6 +165,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.strength_slider.setValue(80)
         self.grain_check = QtWidgets.QCheckBox("颗粒")
         self.grain_check.setChecked(True)
+        self.grain_type = QtWidgets.QComboBox()
+        self.grain_type.addItems([GrainType.SILVER_HALIDE.value, GrainType.MODERN_FINE.value, GrainType.COARSE_PUSH.value])
+        self.grain_size = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.grain_size.setRange(0, 100)
+        self.grain_size.setValue(30)
+        self.grain_density = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.grain_density.setRange(0, 100)
+        self.grain_density.setValue(30)
+        self.grain_rough = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.grain_rough.setRange(0, 100)
+        self.grain_rough.setValue(40)
+        self.grain_chroma = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.grain_chroma.setRange(0, 100)
+        self.grain_chroma.setValue(0)
         self.vignette_check = QtWidgets.QCheckBox("暗角")
         self.auto_check = QtWidgets.QCheckBox("自动基线（曝光/色温）")
         self.auto_check.setChecked(True)
@@ -194,6 +212,14 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("预设：", self.preset_combo)
         form.addRow("强度：", self.strength_slider)
         form.addRow("", self.grain_check)
+        grain_box = QtWidgets.QGroupBox("颗粒参数")
+        grain_form = QtWidgets.QFormLayout(grain_box)
+        grain_form.addRow("类型：", self.grain_type)
+        grain_form.addRow("大小：", self.grain_size)
+        grain_form.addRow("密度：", self.grain_density)
+        grain_form.addRow("粗糙：", self.grain_rough)
+        grain_form.addRow("彩色混合：", self.grain_chroma)
+        right.addWidget(grain_box)
         form.addRow("", self.vignette_check)
         form.addRow("", self.auto_check)
         form.addRow("后端：", self.backend_combo)
@@ -227,6 +253,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
         self.strength_slider.valueChanged.connect(self.on_strength_changed)
         self.grain_check.toggled.connect(self.on_flags_changed)
+        self.grain_type.currentTextChanged.connect(self.on_grain_params_changed)
+        self.grain_size.valueChanged.connect(self.on_grain_params_changed)
+        self.grain_density.valueChanged.connect(self.on_grain_params_changed)
+        self.grain_rough.valueChanged.connect(self.on_grain_params_changed)
+        self.grain_chroma.valueChanged.connect(self.on_grain_params_changed)
         self.vignette_check.toggled.connect(self.on_flags_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
@@ -331,6 +362,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_selection_changed(self) -> None:
         self._request_preview_update()
 
+    def on_grain_params_changed(self) -> None:
+        self.thread.options.grain_type = GrainType(self.grain_type.currentText())
+        self.thread.options.grain_size = self.grain_size.value()
+        self.thread.options.grain_density = self.grain_density.value()
+        self.thread.options.grain_roughness = self.grain_rough.value()
+        self.thread.options.grain_chroma_mix = self.grain_chroma.value()
+        self._request_preview_update()
+
     def _request_preview_update(self) -> None:
         # debounce preview updates
         self._preview_seq += 1
@@ -390,6 +429,8 @@ class MainWindow(QtWidgets.QMainWindow):
             src = r2.image_bgr8
         preview = self._downscale_max_side(src, self.preview_max_side)
         self.preview_cache[path] = preview
+        # Set deterministic grain seed per image path
+        self._set_grain_seed_for_path(path)
         return preview
 
     def _process_preview(self, bgr8: np.ndarray) -> np.ndarray:
@@ -420,6 +461,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._refit_previews()
+
+    def _set_grain_seed_for_path(self, path: str) -> None:
+        self.thread.options.grain_seed = zlib.adler32(path.encode("utf-8")) & 0xFFFFFFFF
 
     def on_progress(self, cur: int, total: int) -> None:
         self.progress.setMaximum(total)
