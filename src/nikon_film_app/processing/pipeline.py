@@ -329,9 +329,12 @@ class ImageProcessor:
         """Expired film: base fog, DR crush, cast, mottled dye fade."""
         if t <= 1e-6:
             return img
+        # Soften peak: UI 0..100 maps into ~0..0.55 of the previous max,
+        # so mid/high slider steps are finer and less extreme.
+        t = float(np.clip(t, 0.0, 1.0)) * 0.55
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 1)
-        vis = float(np.power(max(t, 0.0), 0.75))
+        vis = float(np.power(max(t, 0.0), 0.9))
         out = img.astype(np.float32).copy()
         fog = 0.05 + 0.14 * vis
         out = self._clip01(out * (1.0 - 0.55 * vis) + fog)
