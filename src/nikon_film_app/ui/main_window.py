@@ -384,6 +384,38 @@ class MainWindow(QtWidgets.QMainWindow):
         grid.addWidget(_fx_cell(self.fx_scratches_check, self.fx_scratches_slider), 5, 1)
         grid.addWidget(_fx_cell(self.fx_defects_check, self.fx_defects_slider), 5, 2)
         grid.addWidget(_fx_cell(self.fx_partial_check, self.fx_partial_slider), 5, 3)
+        # 分色器：两行（饱和/明度）x 8 列，紧凑滑条
+        splitter_box = QtWidgets.QGroupBox("分色器")
+        split_grid = QtWidgets.QGridLayout(splitter_box)
+        split_grid.setContentsMargins(6, 6, 6, 6)
+        split_grid.setHorizontalSpacing(6)
+        split_grid.setVerticalSpacing(2)
+        bands = ["红", "橙", "黄", "绿", "青", "蓝", "紫", "品红"]
+        self.hsl_sat_sliders: List[QtWidgets.QSlider] = []
+        self.hsl_lum_sliders: List[QtWidgets.QSlider] = []
+        # Header labels
+        for col, name in enumerate(bands):
+            lab = QtWidgets.QLabel(name)
+            lab.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            split_grid.addWidget(lab, 0, col)
+        for col in range(8):
+            s = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            s.setRange(-100, 100)
+            s.setValue(0)
+            _short_slider(s)
+            self.hsl_sat_sliders.append(s)
+            split_grid.addWidget(s, 1, col)
+        for col in range(8):
+            l = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            l.setRange(-100, 100)
+            l.setValue(0)
+            _short_slider(l)
+            self.hsl_lum_sliders.append(l)
+            split_grid.addWidget(l, 2, col)
+        # Row labels on the left
+        split_grid.addWidget(QtWidgets.QLabel("饱和"), 1, 8, 1, 1)  # placed after columns as legend
+        split_grid.addWidget(QtWidgets.QLabel("明度"), 2, 8, 1, 1)
+        grid.addWidget(splitter_box, 6, 0, 1, 4)
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(6)
         btns.addWidget(self.process_btn)
@@ -477,6 +509,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fx_defects_slider.valueChanged.connect(self.on_special_fx_changed)
         self.fx_partial_check.toggled.connect(self.on_special_fx_changed)
         self.fx_partial_slider.valueChanged.connect(self.on_special_fx_changed)
+        # 分色器信号
+        for s in self.hsl_sat_sliders + self.hsl_lum_sliders:
+            s.valueChanged.connect(self.on_hsl_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
 
@@ -804,7 +839,10 @@ class MainWindow(QtWidgets.QMainWindow):
         no_sh = (getattr(self.thread.options, "shadows", 0) == 0)
         no_vib = (getattr(self.thread.options, "vibrance", 0) == 0)
         no_sat = (getattr(self.thread.options, "saturation", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast and no_hi and no_sh and no_vib and no_sat and no_special
+        hsl_sat = getattr(self.thread.options, "hsl_sat8", None) or [0] * 8
+        hsl_lum = getattr(self.thread.options, "hsl_lum8", None) or [0] * 8
+        no_splitter = all(v == 0 for v in hsl_sat) and all(v == 0 for v in hsl_lum)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast and no_hi and no_sh and no_vib and no_sat and no_special and no_splitter
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -887,6 +925,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_density.setValue(0)
         self.grain_rough.setValue(0)
         self.grain_chroma.setValue(0)
+        # 分色器复位
+        for s in self.hsl_sat_sliders:
+            s.setValue(0)
+        for l in self.hsl_lum_sliders:
+            l.setValue(0)
         idx_id = self.preset_combo.findText("不处理")
         if idx_id >= 0:
             self.preset_combo.setCurrentIndex(idx_id)
@@ -907,6 +950,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.shadows = 0
         self.thread.options.vibrance = 0
         self.thread.options.saturation = 0
+        # Color splitter options
+        self.thread.options.enable_color_splitter = True
+        self.thread.options.hsl_sat8 = [0] * 8
+        self.thread.options.hsl_lum8 = [0] * 8
         # FX options
         self.thread.options.enable_lens_aging = False
         self.thread.options.lens_aging = 0
@@ -929,4 +976,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.film_defects = self.fx_defects_slider.value()
         self.thread.options.enable_partial_exposure = self.fx_partial_check.isChecked()
         self.thread.options.partial_exposure = self.fx_partial_slider.value()
+        self._request_preview_update()
+
+    def on_hsl_changed(self, _value: int = 0) -> None:
+        # Collect current HSL per-band values and push to options
+        sat = [int(s.value()) for s in self.hsl_sat_sliders]
+        lum = [int(l.value()) for l in self.hsl_lum_sliders]
+        self.thread.options.hsl_sat8 = sat
+        self.thread.options.hsl_lum8 = lum
+        self.thread.options.enable_color_splitter = True
         self._request_preview_update()

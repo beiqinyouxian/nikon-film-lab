@@ -31,6 +31,10 @@ class ProcessOptions:
     enable_partial_exposure: bool = False
     partial_exposure: int = 0           # 0..100
     fx_seed: Optional[int] = None
+    # Color splitter (HSL per-color bands; independent of presets)
+    enable_color_splitter: bool = True
+    hsl_sat8: list[int] | None = None  # [-100..100] x8 for 红/橙/黄/绿/青/蓝/紫/品红
+    hsl_lum8: list[int] | None = None  # [-100..100] x8
     # Vignette: off/auto/manual
     vignette_mode: str = "off"    # "off" | "auto" | "manual"
     vignette_amount: int = 0      # 0..100, used when mode=manual
@@ -116,6 +120,13 @@ class ImageProcessor:
             vibrance,
             saturation,
         )
+        # Apply color splitter after film look (independent of presets), before defects
+        if getattr(options, "hsl_sat8", None) is None:
+            options.hsl_sat8 = [0] * 8
+        if getattr(options, "hsl_lum8", None) is None:
+            options.hsl_lum8 = [0] * 8
+        if options.enable_color_splitter and (any(v != 0 for v in options.hsl_sat8) or any(v != 0 for v in options.hsl_lum8)):
+            out = self._apply_color_splitter(out, options.hsl_sat8, options.hsl_lum8)
         # Apply specialty FX independently from preset
         out = self._apply_special_fx(out, options)
         return np.clip(out, 0.0, 1.0).astype(np.float32)
@@ -304,5 +315,36 @@ class ImageProcessor:
             out = self._film_defects(out, defects_t, None if seed is None else seed + 29)
         if scratch_t > 0.0:
             out = self._scratches(out, scratch_t, None if seed is None else seed + 41)
+        return out
+    
+    # ---- Color Splitter (HSL-style 8-band) ----
+    @staticmethod
+    def _apply_color_splitter(img: np.ndarray, sat8: list[int], lum8: list[int]) -> np.ndarray:
+        img8 = (np.clip(img, 0, 1) * 255.0).astype(np.uint8)
+        hsv = cv2.cvtColor(img8, cv2.COLOR_BGR2HSV).astype(np.float32)
+        h = hsv[..., 0] * 2.0  # degrees 0..360
+        s = hsv[..., 1] / 255.0
+        v = hsv[..., 2] / 255.0
+        centers = np.array([0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0], dtype=np.float32)
+        width = 40.0
+        sat_adj = np.array([np.clip(x, -100, 100) / 100.0 for x in (sat8 or [0]*8)], dtype=np.float32)
+        lum_adj = np.array([np.clip(x, -100, 100) / 100.0 for x in (lum8 or [0]*8)], dtype=np.float32)
+        total_sat = np.zeros_like(s, dtype=np.float32)
+        total_lum = np.zeros_like(v, dtype=np.float32)
+        for i in range(8):
+            c = centers[i]
+            d = np.abs(h - c)
+            d = np.minimum(d, 360.0 - d)
+            wmask = np.clip(1.0 - d / width, 0.0, 1.0)
+            wmask = wmask * wmask
+            if sat_adj[i] != 0.0:
+                total_sat += wmask * sat_adj[i]
+            if lum_adj[i] != 0.0:
+                total_lum += wmask * lum_adj[i]
+        s2 = np.clip(s * (1.0 + total_sat), 0.0, 1.0)
+        v2 = np.clip(v * (1.0 + total_lum), 0.0, 1.0)
+        hsv[..., 1] = (s2 * 255.0).astype(np.float32)
+        hsv[..., 2] = (v2 * 255.0).astype(np.float32)
+        out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
         return out
 
