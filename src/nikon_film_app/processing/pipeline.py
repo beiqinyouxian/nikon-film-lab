@@ -70,6 +70,12 @@ class ImageProcessor:
 
     def list_presets(self) -> list[str]:
         return list(self.presets.keys())
+    
+    def recommended_strength(self, preset_name: str) -> int:
+        p = self.presets.get(preset_name)
+        if p is None:
+            return 0
+        return int(getattr(p, "recommended_strength", 0))
 
 
     def process_bgr01(self, img_bgr01: np.ndarray, options: ProcessOptions) -> np.ndarray:

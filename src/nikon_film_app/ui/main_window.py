@@ -182,6 +182,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.strength_slider.setMinimum(0)
         self.strength_slider.setMaximum(100)
         self.strength_slider.setValue(0)
+        self.strength_preset_btn = QtWidgets.QPushButton("推荐强度")
+        self.strength_preset_btn.setToolTip("应用当前预设的推荐强度")
         self.grain_check = QtWidgets.QCheckBox("颗粒")
         self.grain_check.setChecked(False)
         self.grain_preset_btn = QtWidgets.QPushButton("推荐参数")
@@ -341,7 +343,14 @@ class MainWindow(QtWidgets.QMainWindow):
         bgrid.setHorizontalSpacing(8)
         bgrid.setVerticalSpacing(4)
         bgrid.addWidget(_pair_row("预设", self.preset_combo), 0, 0)
-        bgrid.addWidget(_pair_row("强度", self.strength_slider), 0, 1)
+        # 强度行：滑条 + 推荐按钮
+        strength_row = QtWidgets.QWidget()
+        strength_layout = QtWidgets.QHBoxLayout(strength_row)
+        strength_layout.setContentsMargins(0, 0, 0, 0)
+        strength_layout.setSpacing(4)
+        strength_layout.addWidget(self.strength_slider, 1)
+        strength_layout.addWidget(self.strength_preset_btn)
+        bgrid.addWidget(_pair_row("强度", strength_row), 0, 1)
         bgrid.addWidget(_pair_row("暗角", self.vignette_mode), 0, 2)
         bgrid.addWidget(_pair_row("暗角量", self.vignette_amount), 0, 3)
         bgrid.addWidget(self.auto_check, 1, 0)
@@ -519,6 +528,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cancel_btn.clicked.connect(self.on_cancel)
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
         self.strength_slider.valueChanged.connect(self.on_strength_changed)
+        self.strength_preset_btn.clicked.connect(self.on_strength_recommended_clicked)
         self.grain_check.toggled.connect(self.on_grain_enabled_changed)
         self.grain_preset_btn.clicked.connect(self.on_grain_preset_clicked)
         self.grain_type.currentTextChanged.connect(self.on_grain_type_changed)
@@ -676,11 +686,22 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_preset_changed(self, name: str) -> None:
         self.thread.options.preset_name = name
+        # 自动应用预设推荐强度（不影响手动曝光等）
+        rec = self.thread.processor.recommended_strength(name)
+        self.strength_slider.blockSignals(True)
+        self.strength_slider.setValue(int(rec))
+        self.strength_slider.blockSignals(False)
+        self.thread.options.strength_percent = int(rec)
         self._request_preview_update()
 
     def on_strength_changed(self, value: int) -> None:
         self.thread.options.strength_percent = value
         self._request_preview_update()
+    
+    def on_strength_recommended_clicked(self) -> None:
+        name = self.preset_combo.currentText()
+        rec = self.thread.processor.recommended_strength(name)
+        self.strength_slider.setValue(int(rec))
 
     def on_flags_changed(self) -> None:
         self.thread.options.enable_grain = self.grain_check.isChecked()

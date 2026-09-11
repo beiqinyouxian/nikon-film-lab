@@ -393,6 +393,7 @@ ProcessFunc = Callable[
 class FilmPreset:
     name: str
     process: ProcessFunc
+    recommended_strength: int = 80  # 0..100, UI strength default when chosen
 
 
 def _build_preset(
@@ -412,6 +413,7 @@ def _build_preset(
     microcontrast_amt: float = 0.0,
     monochrome: bool = False,
     halation: float = 0.0,
+    recommended_strength: int = 80,
 ) -> FilmPreset:
     curve = _make_curve(*curve_params)
 
@@ -484,7 +486,7 @@ def _build_preset(
             work = _adjust_saturation(work, 0.7 * user_saturation)
         return _blend(img, work, strength01)
 
-    return FilmPreset(name=name, process=proc)
+    return FilmPreset(name=name, process=proc, recommended_strength=int(max(0, min(100, recommended_strength))))
 
 
 def get_presets() -> Dict[str, FilmPreset]:
@@ -501,6 +503,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             contrast=0.0,
             saturation=0.0,
             default_vignette=0.0,
+            recommended_strength=0,
         ),
         # Leica-inspired
         _build_preset(
@@ -512,6 +515,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             default_vignette=0.12,
             rolloff=0.12,
             microcontrast_amt=0.16,
+            recommended_strength=78,
         ),
         _build_preset(
             "Leica Classic Mono",
@@ -523,6 +527,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             rolloff=0.10,
             microcontrast_amt=0.18,
             monochrome=True,
+            recommended_strength=90,
         ),
         _build_preset(
             "Leica Chrome Vivid",
@@ -533,6 +538,41 @@ def get_presets() -> Dict[str, FilmPreset]:
             default_vignette=0.15,
             rolloff=0.10,
             microcontrast_amt=0.20,
+            recommended_strength=85,
+        ),
+        # Chrome family (rich color)
+        _build_preset(
+            "Chrome 浓彩",
+            (0.00, 0.50, 1.00),
+            mat((1.10, 0.02, -0.05), (-0.01, 1.08, -0.02), (-0.02, -0.02, 1.10)),
+            contrast=0.20,
+            saturation=0.24,
+            default_vignette=0.14,
+            rolloff=0.10,
+            microcontrast_amt=0.16,
+            recommended_strength=88,
+        ),
+        _build_preset(
+            "Chrome 经典",
+            (0.02, 0.52, 0.98),
+            mat((1.06, 0.01, -0.02), (-0.01, 1.05, -0.02), (-0.01, 0.00, 1.04)),
+            contrast=0.15,
+            saturation=0.14,
+            default_vignette=0.14,
+            rolloff=0.12,
+            microcontrast_amt=0.10,
+            recommended_strength=80,
+        ),
+        _build_preset(
+            "Chrome 鲜艳",
+            (0.00, 0.48, 0.99),
+            mat((1.12, 0.00, -0.06), (-0.02, 1.10, -0.02), (-0.02, -0.02, 1.12)),
+            contrast=0.22,
+            saturation=0.28,
+            default_vignette=0.15,
+            rolloff=0.10,
+            microcontrast_amt=0.20,
+            recommended_strength=90,
         ),
         # Kodak family
         _build_preset(
@@ -548,6 +588,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_shadow_amt=0.05,
             split_high_amt=0.04,
             microcontrast_amt=0.06,
+            recommended_strength=75,
         ),
         _build_preset(
             "Kodak Gold 200",
@@ -561,6 +602,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_high_bgr=(0.00, 0.02, 0.04),
             split_high_amt=0.05,
             microcontrast_amt=0.04,
+            recommended_strength=78,
         ),
         # Fuji
         _build_preset(
@@ -576,6 +618,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_shadow_amt=0.03,
             split_high_amt=0.03,
             microcontrast_amt=0.08,
+            recommended_strength=85,
         ),
         _build_preset(
             "Fuji Pro 400H",
@@ -591,6 +634,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_shadow_amt=0.06,
             split_high_amt=0.02,
             microcontrast_amt=0.03,
+            recommended_strength=72,
         ),
         # B&W
         _build_preset(
@@ -603,6 +647,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             rolloff=0.12,
             microcontrast_amt=0.10,
             monochrome=True,
+            recommended_strength=88,
         ),
         _build_preset(
             "Kodak Tri-X",
@@ -614,6 +659,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             rolloff=0.10,
             microcontrast_amt=0.14,
             monochrome=True,
+            recommended_strength=92,
         ),
         # Cinestill
         _build_preset(
@@ -630,6 +676,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_high_amt=0.06,
             microcontrast_amt=0.06,
             halation=0.12,
+            recommended_strength=80,
         ),
         # Agfa
         _build_preset(
@@ -645,6 +692,7 @@ def get_presets() -> Dict[str, FilmPreset]:
             split_shadow_amt=0.03,
             split_high_amt=0.02,
             microcontrast_amt=0.05,
+            recommended_strength=76,
         ),
     ]
     return {p.name: p for p in presets}
