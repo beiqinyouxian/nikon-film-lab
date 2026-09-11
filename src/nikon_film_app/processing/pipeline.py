@@ -30,6 +30,10 @@ class ProcessOptions:
     temp_bias: int = 0            # -100..100 (cooler..warmer)
     clarity: int = 0              # -100..100 (negative softens), default 0 center
     contrast: int = 0             # -100..100, default 0 center (left softer, right harder)
+    highlights: int = 0           # -100..100
+    shadows: int = 0              # -100..100
+    vibrance: int = 0             # -100..100
+    saturation: int = 0           # -100..100
 
 
 class ImageProcessor:
@@ -78,6 +82,10 @@ class ImageProcessor:
         temp01 = max(-1.0, min(1.0, options.temp_bias / 100.0))
         clarity_amount = max(-1.0, min(1.0, options.clarity / 100.0))
         contrast_amount = max(-1.0, min(1.0, options.contrast / 100.0))
+        highlights = max(-1.0, min(1.0, options.highlights / 100.0))
+        shadows = max(-1.0, min(1.0, options.shadows / 100.0))
+        vibrance = max(-1.0, min(1.0, options.vibrance / 100.0))
+        saturation = max(-1.0, min(1.0, options.saturation / 100.0))
         out = preset.process(
             img,
             self.accel,
@@ -91,6 +99,10 @@ class ImageProcessor:
             temp01,
             clarity_amount,
             contrast_amount,
+            highlights,
+            shadows,
+            vibrance,
+            saturation,
         )
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 
