@@ -139,10 +139,19 @@ class GrainParams:
 
 def _resize_like(noise: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
     th, tw = target_hw
-    h, w = noise.shape[:2]
-    if (h, w) == (th, tw):
-        return noise
-    return cv2.resize(noise, (tw, th), interpolation=cv2.INTER_CUBIC)
+    # Normalize input to 2D or 3D with channels last
+    if noise.ndim == 3 and noise.shape[2] in (1, 3):
+        resized = cv2.resize(noise, (tw, th), interpolation=cv2.INTER_CUBIC)
+        # OpenCV may drop the channel dim when it's 1 in some environments; ensure it exists
+        if resized.ndim == 2:
+            resized = resized[..., None]
+        return resized
+    else:
+        # Treat as single-channel and re-add channel axis
+        resized = cv2.resize(noise, (tw, th), interpolation=cv2.INTER_CUBIC)
+        if resized.ndim == 2:
+            resized = resized[..., None]
+        return resized
 
 
 def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
