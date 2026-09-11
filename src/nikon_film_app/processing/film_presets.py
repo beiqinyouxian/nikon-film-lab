@@ -207,7 +207,7 @@ def _apply_grain(img: np.ndarray, params: GrainParams) -> np.ndarray:
         # Mono luminance, noticeable clumps
         base = rng.normal(0.0, 1.0, size=(low_h, low_w, 1)).astype(np.float32)
         # Clumping: blend coarse and fine
-        coarse = cv2.GaussianBlur(base, (0, 0), sigmaX=1.0 + 3.0 * params.roughness01)
+        coarse = _ensure_1c(cv2.GaussianBlur(base, (0, 0), sigmaX=1.0 + 3.0 * params.roughness01))
         fine = rng.normal(0.0, 1.0, size=(low_h, low_w, 1)).astype(np.float32) * 0.5
         mixed = (1.0 - params.roughness01) * fine + params.roughness01 * coarse
         noise = _ensure_1c(_resize_like(mixed, (h, w)))
