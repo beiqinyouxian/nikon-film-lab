@@ -236,16 +236,17 @@ class ImageProcessor:
         soft = cv2.GaussianBlur(mixed, (0, 0), sigmaX=1.2 + 2.5 * vis)
         mixed = mixed * (1.0 - 0.30 * vis * edge3) + soft * (0.30 * vis * edge3)
         # Mild CA toward corners: scale R/B slightly
-        yy, xx = np.ogrid[:h, :w]
+        # Use mgrid so both remap maps are full HxW (ogrid leaves map_y as Hx1 and breaks OpenCV).
+        yy, xx = np.mgrid[:h, :w]
         cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
         rad = np.sqrt(((yy - cy) / max(cy, 1e-6)) ** 2 + ((xx - cx) / max(cx, 1e-6)) ** 2)
         rad = np.clip(rad, 0.0, 1.0).astype(np.float32)
         shift = (0.004 + 0.010 * vis) * rad
         map_x = (xx + shift * (xx - cx)).astype(np.float32)
         map_y = yy.astype(np.float32)
+        map_x2 = (xx - shift * (xx - cx)).astype(np.float32)
         bb, gg, rr = cv2.split(mixed)
         rr2 = cv2.remap(rr, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-        map_x2 = (xx - shift * (xx - cx)).astype(np.float32)
         bb2 = cv2.remap(bb, map_x2, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
         mixed = cv2.merge([bb2, gg, rr2]).astype(np.float32)
         # Slight vignette
