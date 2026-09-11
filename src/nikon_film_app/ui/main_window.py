@@ -226,7 +226,6 @@ class MainWindow(QtWidgets.QMainWindow):
         grain_form.addRow("粗糙：", self.grain_rough)
         grain_form.addRow("彩色混合：", self.grain_chroma)
         right.addWidget(grain_box)
-        form.addRow("", self.vignette_check)
         form.addRow("", self.auto_check)
         form.addRow("后端：", self.backend_combo)
         right.addLayout(form)
@@ -470,7 +469,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # If preset is '不处理' and strength==0 and all toggles off, show original
         no_preset = (self.thread.options.preset_name == "不处理") or (self.preset_combo.currentText() == "不处理")
         no_strength = self.thread.options.strength_percent <= 0
-        no_fx = (not self.thread.options.enable_grain) and (not self.thread.options.enable_vignette) and (not self.thread.options.enable_auto_baseline)
+        no_vignette = (getattr(self.thread.options, "vignette_mode", "off") == "off")
+        no_exposure = (getattr(self.thread.options, "exposure_ev_x100", 0) == 0)
+        no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -517,20 +519,31 @@ class MainWindow(QtWidgets.QMainWindow):
         # Reset UI controls to neutral
         self.strength_slider.setValue(0)
         self.grain_check.setChecked(False)
-        self.vignette_check.setChecked(False)
+        self.vignette_mode.setCurrentIndex(0)  # 不处理
+        self.vignette_amount.setValue(0)
         self.auto_check.setChecked(False)
         self.grain_size.setValue(0)
         self.grain_density.setValue(0)
         self.grain_rough.setValue(0)
         self.grain_chroma.setValue(0)
+        self.exposure_slider.setValue(0)
+        self.temp_slider.setValue(0)
+        # preset back to 不处理
+        idx_id = self.preset_combo.findText("不处理")
+        if idx_id >= 0:
+            self.preset_combo.setCurrentIndex(idx_id)
         # Update options directly
         self.thread.options.strength_percent = 0
         self.thread.options.enable_grain = False
-        self.thread.options.enable_vignette = False
+        self.thread.options.vignette_mode = "off"
+        self.thread.options.vignette_amount = 0
         self.thread.options.enable_auto_baseline = False
         self.thread.options.grain_size = 0
         self.thread.options.grain_density = 0
         self.thread.options.grain_roughness = 0
         self.thread.options.grain_chroma_mix = 0
+        self.thread.options.exposure_ev_x100 = 0
+        self.thread.options.temp_bias = 0
+        self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 

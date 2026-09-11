@@ -21,8 +21,13 @@ class ProcessOptions:
     grain_roughness: int = 40     # 0..100
     grain_chroma_mix: int = 0     # 0..100
     grain_seed: Optional[int] = None
-    enable_vignette: bool = False
+    # Vignette: off/auto/manual
+    vignette_mode: str = "off"    # "off" | "auto" | "manual"
+    vignette_amount: int = 0      # 0..100, used when mode=manual
     enable_auto_baseline: bool = True
+    # Manual exposure and color temperature
+    exposure_ev_x100: int = 0     # -200..200 represents -2..+2 EV
+    temp_bias: int = 0            # -100..100 (cooler..warmer)
 
 
 class ImageProcessor:
@@ -56,14 +61,30 @@ class ImageProcessor:
             chroma_mix01=max(0.0, min(1.0, options.grain_chroma_mix / 100.0)),
             seed=options.grain_seed,
         )
+        # Vignette selection
+        if options.vignette_mode == "manual":
+            enable_vignette = options.vignette_amount > 0
+            vignette_override = max(0.0, min(1.0, options.vignette_amount / 100.0))
+        elif options.vignette_mode == "auto":
+            enable_vignette = True
+            vignette_override = None
+        else:
+            enable_vignette = False
+            vignette_override = None
+        # Manual exposure and color temperature
+        exposure_ev = max(-2.0, min(2.0, options.exposure_ev_x100 / 100.0))
+        temp01 = max(-1.0, min(1.0, options.temp_bias / 100.0))
         out = preset.process(
             img,
             self.accel,
             strength01,
             grain,
-            options.enable_vignette,
+            enable_vignette,
+            vignette_override,
             options.enable_auto_baseline,
             options.grain_seed,
+            exposure_ev,
+            temp01,
         )
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 

@@ -91,6 +91,26 @@ def _microcontrast(img: np.ndarray, amount: float, radius: float = 1.6) -> np.nd
     return _clip01(out)
 
 
+def _apply_exposure(img: np.ndarray, ev_stops: float) -> np.ndarray:
+    if abs(ev_stops) < 1e-6:
+        return img
+    gain = float(2.0 ** ev_stops)
+    return _clip01(img * gain)
+
+
+def _apply_color_temp(img: np.ndarray, temp01: float) -> np.ndarray:
+    # temp01 in [-1,1], positive warms (R up, B down), negative cools
+    if abs(temp01) < 1e-6:
+        return img
+    r_gain = 1.0 + 0.4 * max(0.0, temp01) - 0.2 * max(0.0, -temp01)
+    b_gain = 1.0 + 0.4 * max(0.0, -temp01) - 0.2 * max(0.0, temp01)
+    g_gain = 1.0
+    b, g, r = cv2.split(img.astype(np.float32))
+    b = np.clip(b * b_gain, 0, 1)
+    g = np.clip(g * g_gain, 0, 1)
+    r = np.clip(r * r_gain, 0, 1)
+    return cv2.merge([b, g, r]).astype(np.float32)
+
 def _adjust_contrast(img: np.ndarray, contrast: float) -> np.ndarray:
     # contrast >0 increases contrast around mid-gray 0.5
     return _clip01((img - 0.5) * (1.0 + contrast) + 0.5)
@@ -284,7 +304,7 @@ def _auto_baseline(img: np.ndarray) -> np.ndarray:
     return _clip01(img * gain)
 
 
-ProcessFunc = Callable[[np.ndarray, Accelerator, float, GrainParams, bool, bool, Optional[int]], np.ndarray]
+ProcessFunc = Callable[[np.ndarray, Accelerator, float, GrainParams, bool, Optional[float], bool, Optional[int], float, float], np.ndarray]
 
 
 @dataclass
@@ -313,7 +333,18 @@ def _build_preset(
 ) -> FilmPreset:
     curve = _make_curve(*curve_params)
 
-    def proc(img: np.ndarray, accel: Accelerator, strength01: float, grain: GrainParams, enable_vignette: bool, auto_base: bool, grain_seed: Optional[int]) -> np.ndarray:
+    def proc(
+        img: np.ndarray,
+        accel: Accelerator,
+        strength01: float,
+        grain: GrainParams,
+        enable_vignette: bool,
+        vignette_override01: Optional[float],
+        auto_base: bool,
+        grain_seed: Optional[int],
+        exposure_ev: float,
+        temp01: float,
+    ) -> np.ndarray:
         work = img.copy()
         if auto_base:
             work = _auto_baseline(work)
@@ -340,11 +371,18 @@ def _build_preset(
             glow = glow_src + warm
             work = _clip01(work + halation * mask[..., None] * (glow - work))
         if enable_vignette:
-            work = _vignette(work, default_vignette)
+            vig_amt = float(default_vignette if vignette_override01 is None else max(0.0, min(1.0, vignette_override01)))
+            if vig_amt > 0.0:
+                work = _vignette(work, vig_amt)
         if grain.seed is None:
             grain.seed = grain_seed
         if grain.enabled:
             work = _apply_grain(work, grain)
+        # Manual exposure and color temperature applied at the end
+        if abs(exposure_ev) > 1e-6:
+            work = _apply_exposure(work, exposure_ev)
+        if abs(temp01) > 1e-6:
+            work = _apply_color_temp(work, temp01)
         return _blend(img, work, strength01)
 
     return FilmPreset(name=name, process=proc)
