@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
+from collections import deque
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -138,6 +140,101 @@ class DropListWidget(QtWidgets.QListWidget):
             self.files_dropped.emit(paths)
 
 
+
+class ThumbWorker(QtCore.QThread):
+    """Background thumbnail loader for the queue list."""
+
+    thumb_ready = QtCore.Signal(str, object)  # path, bgr8 uint8 HxWx3
+
+    def __init__(self, parent=None, max_side: int = 128) -> None:
+        super().__init__(parent)
+        self.max_side = int(max_side)
+        self._q: deque[str] = deque()
+        self._pending: set[str] = set()
+        self._lock = threading.Lock()
+        self._stop = False
+        self._wake = threading.Event()
+
+    def enqueue(self, path: str) -> None:
+        if not path:
+            return
+        with self._lock:
+            if path in self._pending:
+                return
+            self._pending.add(path)
+            self._q.append(path)
+        self._wake.set()
+
+    def clear_pending(self) -> None:
+        with self._lock:
+            self._q.clear()
+            self._pending.clear()
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._stop = True
+        self._wake.set()
+
+    def _pop(self) -> Optional[str]:
+        with self._lock:
+            if not self._q:
+                return None
+            path = self._q.popleft()
+            self._pending.discard(path)
+            return path
+
+    def _make_thumb(self, path: str) -> Optional[np.ndarray]:
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in (".jpg", ".jpeg"):
+                # Fast path: decode then downscale
+                img = cv2.imread(path, cv2.IMREAD_COLOR)
+                if img is None:
+                    r = load_jpeg_bgr8(path)
+                    img = r.image_bgr8
+            elif ext == ".nef":
+                # Prefer embedded JPEG preview when available (much faster)
+                img = None
+                try:
+                    import rawpy  # type: ignore
+
+                    with rawpy.imread(path) as raw:
+                        try:
+                            thumb = raw.extract_thumb()
+                            if getattr(thumb, "format", None) == rawpy.ThumbFormat.JPEG:
+                                buf = np.frombuffer(thumb.data, dtype=np.uint8)
+                                img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                        except Exception:
+                            img = None
+                except Exception:
+                    img = None
+                if img is None:
+                    r2 = load_nef_to_bgr8(path)
+                    img = r2.image_bgr8
+            else:
+                return None
+            if img is None or img.size == 0:
+                return None
+            h, w = img.shape[:2]
+            scale = min(1.0, float(self.max_side) / float(max(h, w)))
+            if scale < 1.0:
+                img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+            return img
+        except Exception:
+            return None
+
+    def run(self) -> None:
+        while not self._stop:
+            path = self._pop()
+            if path is None:
+                self._wake.wait(0.25)
+                self._wake.clear()
+                continue
+            thumb = self._make_thumb(path)
+            if thumb is not None and not self._stop:
+                self.thumb_ready.emit(path, thumb)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -160,12 +257,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list_widget.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self.list_widget.setIconSize(QtCore.QSize(112, 112))
+        self.list_widget.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self.list_widget.setMovement(QtWidgets.QListView.Movement.Static)
+        self.list_widget.setWordWrap(True)
+        self.list_widget.setSpacing(8)
+        self.list_widget.setUniformItemSizes(True)
         # Thumbnails
         self._thumb_worker = ThumbWorker(self, max_side=128)
         self._thumb_worker.thumb_ready.connect(self._on_thumb_ready)
         self._thumb_worker.start()
         self._thumb_cache: Dict[str, QtGui.QIcon] = {}
         self._path_to_item: Dict[str, QtWidgets.QListWidgetItem] = {}
+        self._placeholder_icon = self._make_placeholder_icon(112)
 
         self.add_btn = QtWidgets.QPushButton("添加文件")
         self.add_dir_btn = QtWidgets.QPushButton("添加文件夹")
@@ -685,13 +790,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_paths(paths)
         self._request_preview_update()
 
+    def _make_placeholder_icon(self, side: int = 112) -> QtGui.QIcon:
+        pix = QtGui.QPixmap(side, side)
+        pix.fill(QtGui.QColor("#555555"))
+        painter = QtGui.QPainter(pix)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#888888")))
+        painter.drawRect(8, 8, side - 17, side - 17)
+        painter.end()
+        return QtGui.QIcon(pix)
+
     def _add_paths(self, paths: List[str]) -> None:
         added = False
         for p in paths:
             if not is_supported(p):
                 continue
-            item = QtWidgets.QListWidgetItem(p)
+            if p in self._path_to_item:
+                continue
+            name = os.path.basename(p)
+            item = QtWidgets.QListWidgetItem(self._placeholder_icon, name)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, p)
+            item.setToolTip(p)
+            item.setSizeHint(QtCore.QSize(128, 140))
             self.list_widget.addItem(item)
+            self._path_to_item[p] = item
+            if p in self._thumb_cache:
+                item.setIcon(self._thumb_cache[p])
+            else:
+                self._thumb_worker.enqueue(p)
             if not added:
                 self._remember_import_dir(p)
                 added = True
@@ -701,6 +826,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_clear(self) -> None:
         self.list_widget.clear()
+        self._path_to_item.clear()
+        self._thumb_cache.clear()
+        try:
+            self._thumb_worker.clear_pending()
+        except Exception:
+            pass
+        self.preview_cache.clear()
         self.preview_label.clear()
         self._current_before_bgr = None
         self._current_after_bgr = None
