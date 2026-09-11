@@ -215,42 +215,72 @@ class ImageProcessor:
         return self._clip01(mixed)
 
     def _scratches(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+        """Front-element hairline scratches: thin, anti-aliased, mostly diagonal, subtle opacity."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 0)
         overlay = img.copy()
-        alpha = np.zeros((h, w, 1), dtype=np.float32)
-        # Number of scratches scales with area and t but capped
-        base_count = int(2 + 6 * t)
-        area_scale = max(1.0, np.sqrt(h * w) / 1000.0)
-        count = int(min(60, base_count * area_scale))
-        for i in range(count):
-            # Random line endpoints slightly beyond frame to span across
-            x0 = int(rng.integers(-w//4, w + w//4))
-            y0 = int(rng.integers(-h//4, h + h//4))
-            angle = float(rng.uniform(0, np.pi))
-            length = int(rng.uniform(0.3, 1.2) * max(h, w))
+        alpha2d = np.zeros((h, w), dtype=np.float32)
+        # Density scales with area and intensity; prefer hairline (thickness 1)
+        area_scale = max(1.0, np.sqrt(h * w) / 900.0)
+        base = 12 + int(36 * t * area_scale)
+        count = int(min(220, base))
+        # Edge bias mask (scratches更容易出现在边缘)
+        edge = 1.0 - self._radial_mask(h, w)  # 0 center, 1 edge
+        edge = cv2.GaussianBlur(edge.astype(np.float32), (0, 0), sigmaX=6.0)
+        # Draw hairlines
+        for _ in range(count):
+            # Start near edge more often
+            if rng.random() < 0.6:
+                # pick an edge and position
+                side = int(rng.integers(0, 4))
+                if side == 0:
+                    x0, y0 = 0, int(rng.integers(0, h))
+                elif side == 1:
+                    x0, y0 = w - 1, int(rng.integers(0, h))
+                elif side == 2:
+                    x0, y0 = int(rng.integers(0, w)), 0
+                else:
+                    x0, y0 = int(rng.integers(0, w)), h - 1
+            else:
+                x0 = int(rng.integers(0, w))
+                y0 = int(rng.integers(0, h))
+            # Diagonal bias angles around 30°/150°
+            if rng.random() < 0.5:
+                angle = float(rng.normal(np.deg2rad(30), np.deg2rad(12)))
+            else:
+                angle = float(rng.normal(np.deg2rad(150), np.deg2rad(12)))
+            length = int(rng.uniform(0.2, 0.9) * max(h, w))
             x1 = int(x0 + length * np.cos(angle))
             y1 = int(y0 - length * np.sin(angle))
-            thickness = int(rng.integers(1, 3))
-            bright = rng.random() < 0.5
+            thickness = 1  # hairline
+            # Bright specular vs faint dark groove
+            bright = rng.random() < 0.55
             color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
-            # Draw on overlay with small opacity
+            # Opacity scales with t and edge weight around the midpoint
+            midx = int((x0 + x1) / 2)
+            midy = int((y0 + y1) / 2)
+            e_w = float(edge[np.clip(midy, 0, h - 1), np.clip(midx, 0, w - 1)])
+            opa = (0.06 + 0.12 * t) * (0.6 + 0.6 * e_w)
             cv2.line(overlay, (x0, y0), (x1, y1), color, thickness=thickness, lineType=cv2.LINE_AA)
-            cv2.line(alpha, (x0, y0), (x1, y1), (0.15 + 0.25 * t,), thickness=thickness, lineType=cv2.LINE_AA)
-        # Occasional hairline arcs
-        for i in range(max(0, int(1 * t))):
-            center = (int(rng.integers(-w//2, w + w//2)), int(rng.integers(-h//2, h + h//2)))
-            axes = (int(rng.uniform(0.6, 1.2) * w), int(rng.uniform(0.6, 1.2) * h))
-            start_angle = int(rng.uniform(0, 360))
-            end_angle = start_angle + int(rng.uniform(20, 120))
-            thickness = 1
-            bright = rng.random() < 0.5
-            color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
-            cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, color, thickness=thickness, lineType=cv2.LINE_AA)
-            cv2.ellipse(alpha, center, axes, 0, start_angle, end_angle, (0.10 + 0.20 * t,), thickness=thickness, lineType=cv2.LINE_AA)
-        alpha3 = self._ensure_3c(alpha)
+            cv2.line(alpha2d, (x0, y0), (x1, y1), opa, thickness=thickness, lineType=cv2.LINE_AA)
+        # Occasional arcs (very subtle)
+        arc_n = int(1 + 2 * t)
+        for _ in range(arc_n):
+            if rng.random() < 0.4:
+                center = (int(rng.integers(-w // 2, w + w // 2)), int(rng.integers(-h // 2, h + h // 2)))
+                axes = (int(rng.uniform(0.5, 1.2) * w), int(rng.uniform(0.5, 1.2) * h))
+                start_angle = int(rng.uniform(0, 360))
+                end_angle = start_angle + int(rng.uniform(12, 60))
+                bright = rng.random() < 0.5
+                color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
+                opa = 0.04 + 0.08 * t
+                cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, color, thickness=1, lineType=cv2.LINE_AA)
+                cv2.ellipse(alpha2d, center, axes, 0, start_angle, end_angle, opa, thickness=1, lineType=cv2.LINE_AA)
+        # Feather overall alpha a bit to avoid harshness
+        alpha2d = cv2.GaussianBlur(alpha2d, (0, 0), sigmaX=0.8)
+        alpha3 = self._ensure_3c(alpha2d)
         out = self._clip01(img * (1.0 - alpha3) + overlay * alpha3)
         return out
 

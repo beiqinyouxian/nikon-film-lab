@@ -558,6 +558,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fx_defects_slider.valueChanged.connect(self.on_special_fx_changed)
         self.fx_partial_check.toggled.connect(self.on_special_fx_changed)
         self.fx_partial_slider.valueChanged.connect(self.on_special_fx_changed)
+        # 拖动即自动启用对应特效（不自动取消；0 为 no-op）
+        self.fx_lens_slider.sliderPressed.connect(lambda: self._auto_check_fx(self.fx_lens_check))
+        self.fx_scratches_slider.sliderPressed.connect(lambda: self._auto_check_fx(self.fx_scratches_check))
+        self.fx_defects_slider.sliderPressed.connect(lambda: self._auto_check_fx(self.fx_defects_check))
+        self.fx_partial_slider.sliderPressed.connect(lambda: self._auto_check_fx(self.fx_partial_check))
         # 分色器信号
         for s in self.hsl_sat_sliders + self.hsl_lum_sliders:
             s.valueChanged.connect(self.on_hsl_changed)
@@ -1063,6 +1068,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.enable_light_leak = self.fx_partial_check.isChecked()
         self.thread.options.light_leak = self.fx_partial_slider.value()
         self._request_preview_update()
+
+    def _auto_check_fx(self, checkbox: QtWidgets.QCheckBox) -> None:
+        if not checkbox.isChecked():
+            checkbox.setChecked(True)
+            # on_special_fx_changed 会在 valueChanged 触发时同步参数；此处先行 request 以获得更及时的反馈
+            self._request_preview_update()
 
     def on_hsl_changed(self, _value: int = 0) -> None:
         # Collect current HSL per-band values and push to options
