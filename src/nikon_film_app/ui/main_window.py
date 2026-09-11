@@ -160,6 +160,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        # 改为缩略图视图（仅图标显示）
+        self.list_widget.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self.list_widget.setIconSize(QtCore.QSize(96, 96))
+        self.list_widget.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self.list_widget.setMovement(QtWidgets.QListView.Movement.Static)
+        self.list_widget.setSpacing(6)
+        self.list_widget.setUniformItemSizes(True)
 
         self.add_btn = QtWidgets.QPushButton("添加文件")
         self.add_dir_btn = QtWidgets.QPushButton("添加文件夹")
@@ -630,11 +637,47 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_paths(paths)
         self._request_preview_update()
 
+    def _make_thumb_icon(self, path: str, max_side: int = 96) -> QtGui.QIcon:
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in (".jpg", ".jpeg"):
+                r = load_jpeg_bgr8(path)
+                src = r.image_bgr8
+            else:
+                r2 = load_nef_to_bgr8(path)
+                src = r2.image_bgr8
+            thumb = self._downscale_max_side(src, max_side)
+            pm = bgr_to_qpixmap(thumb, max_side=max_side)
+            return QtGui.QIcon(pm)
+        except Exception:
+            # Fallback: empty icon
+            return QtGui.QIcon()
+
+    def _item_path(self, item: QtWidgets.QListWidgetItem) -> str:
+        p = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(p, str) and p:
+            return p
+        return item.text()
+
+    def _current_path(self) -> Optional[str]:
+        if self.list_widget.count() == 0:
+            return None
+        idx = self.list_widget.currentRow()
+        if idx < 0:
+            idx = 0
+        return self._item_path(self.list_widget.item(idx))
+
+    def _all_paths(self) -> List[str]:
+        return [self._item_path(self.list_widget.item(i)) for i in range(self.list_widget.count())]
+
     def _add_paths(self, paths: List[str]) -> None:
         for p in paths:
             if not is_supported(p):
                 continue
-            item = QtWidgets.QListWidgetItem(p)
+            icon = self._make_thumb_icon(p, max_side=96)
+            item = QtWidgets.QListWidgetItem(icon, "")
+            item.setToolTip(os.path.basename(p))
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, p)
             self.list_widget.addItem(item)
         # Select the last added item to show immediate preview
         if self.list_widget.count() > 0:
@@ -656,7 +699,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return d or os.getcwd()
 
     def on_process(self) -> None:
-        items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+        items = self._all_paths()
         if not items:
             QtWidgets.QMessageBox.information(self, "提示", "请先添加文件。")
             return
@@ -742,7 +785,7 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        path = self._item_path(self.list_widget.item(idx))
         try:
             before_bgr = self._load_preview_source(path)
             self._current_before_bgr = before_bgr
@@ -817,7 +860,7 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        path = self._item_path(self.list_widget.item(idx))
         try:
             before_bgr = self._load_preview_source(path)
             after_bgr = self._process_preview(before_bgr)
@@ -832,7 +875,7 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        path = self._item_path(self.list_widget.item(idx))
         try:
             before_bgr = self._load_preview_source(path)
             if not self._should_process():
