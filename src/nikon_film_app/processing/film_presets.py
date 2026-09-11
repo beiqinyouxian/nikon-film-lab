@@ -371,6 +371,7 @@ def _build_preset(
         exposure_ev: float,
         temp01: float,
         clarity: float,
+        user_contrast: float = 0.0,
     ) -> np.ndarray:
         work = img.copy()
         if auto_base:
@@ -412,6 +413,9 @@ def _build_preset(
             work = _apply_color_temp(work, temp01)
         if abs(clarity) > 1e-6:
             work = _apply_clarity(work, clarity)
+        # User contrast slider (center 0): applied after film look, before blend
+        if abs(user_contrast) > 1e-6:
+            work = _adjust_contrast(work, 0.8 * user_contrast)
         return _blend(img, work, strength01)
 
     return FilmPreset(name=name, process=proc)
