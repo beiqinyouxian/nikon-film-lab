@@ -160,6 +160,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        # Thumbnails
+        self._thumb_worker = ThumbWorker(self, max_side=128)
+        self._thumb_worker.thumb_ready.connect(self._on_thumb_ready)
+        self._thumb_worker.start()
+        self._thumb_cache: Dict[str, QtGui.QIcon] = {}
+        self._path_to_item: Dict[str, QtWidgets.QListWidgetItem] = {}
 
         self.add_btn = QtWidgets.QPushButton("添加文件")
         self.add_dir_btn = QtWidgets.QPushButton("添加文件夹")
@@ -617,6 +623,13 @@ class MainWindow(QtWidgets.QMainWindow):
             settings = QtCore.QSettings("nikon-film-lab", "nikon-film-lab")
             settings.setValue("right_splitter_state", self.right_splitter.saveState())
             settings.setValue("root_splitter_state", self.root_splitter.saveState())
+            # 停止缩略图工作线程
+            try:
+                if hasattr(self, "_thumb_worker") and self._thumb_worker.isRunning():
+                    self._thumb_worker.stop()
+                    self._thumb_worker.wait(800)
+            except Exception:
+                pass
         except Exception:
             pass
         super().closeEvent(event)
@@ -702,7 +715,11 @@ class MainWindow(QtWidgets.QMainWindow):
         return d or os.getcwd()
 
     def on_process(self) -> None:
-        items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+        items = []
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            p = it.data(QtCore.Qt.ItemDataRole.UserRole) or it.toolTip() or it.text()
+            items.append(str(p))
         if not items:
             QtWidgets.QMessageBox.information(self, "提示", "请先添加文件。")
             return
@@ -810,7 +827,8 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        it = self.list_widget.item(idx)
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole) or it.toolTip() or it.text()
         try:
             before_bgr = self._load_preview_source(path)
             self._current_before_bgr = before_bgr
@@ -885,7 +903,8 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        it = self.list_widget.item(idx)
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole) or it.toolTip() or it.text()
         try:
             before_bgr = self._load_preview_source(path)
             after_bgr = self._process_preview(before_bgr)
@@ -900,7 +919,8 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.list_widget.currentRow()
         if idx < 0:
             idx = 0
-        path = self.list_widget.item(idx).text()
+        it = self.list_widget.item(idx)
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole) or it.toolTip() or it.text()
         try:
             before_bgr = self._load_preview_source(path)
             if not self._should_process():
@@ -941,6 +961,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_grain_seed_for_path(path)
         self._set_fx_seed_for_path(path)
         return preview
+    
+    def _on_thumb_ready(self, path: str, bgr8: object) -> None:
+        # Convert thread-delivered BGR8 to icon on UI thread
+        try:
+            if not isinstance(bgr8, np.ndarray):
+                return
+            rgb = np.ascontiguousarray(bgr8[..., ::-1])
+            h2, w2 = rgb.shape[:2]
+            qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888).copy()
+            icon = QtGui.QIcon(QtGui.QPixmap.fromImage(qimg))
+            self._thumb_cache[path] = icon
+            it = self._path_to_item.get(path)
+            if it is not None:
+                it.setIcon(icon)
+        except Exception:
+            pass
 
     def _process_preview(self, bgr8: np.ndarray) -> np.ndarray:
         img = bgr8.astype(np.float32) / 255.0
