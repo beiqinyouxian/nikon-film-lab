@@ -208,8 +208,13 @@ class MainWindow(QtWidgets.QMainWindow):
         def _bipolar(slider: QtWidgets.QSlider, lo: int, hi: int) -> None:
             slider.setRange(lo, hi)
             slider.setValue(0)
-            slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
-            slider.setTickInterval(max(1, (hi - lo) // 4))
+            slider.setTickPosition(QtWidgets.QSlider.TickPosition.NoTicks)
+
+        def _short_slider(slider: QtWidgets.QSlider) -> QtWidgets.QSlider:
+            slider.setMinimumWidth(72)
+            slider.setMaximumWidth(140)
+            slider.setFixedHeight(22)
+            return slider
 
         self.exposure_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         _bipolar(self.exposure_slider, -200, 200)  # -2.00 .. +2.00 EV (x100), center 0
@@ -260,59 +265,113 @@ class MainWindow(QtWidgets.QMainWindow):
         prog_row.addWidget(self.progress_label)
         left.addLayout(prog_row)
 
-        # Params panel (scrollable)
-        # Left column: basic image params
-        basic_box = QtWidgets.QGroupBox("图片基础参数")
-        basic_form = QtWidgets.QFormLayout(basic_box)
-        basic_form.addRow("预设：", self.preset_combo)
-        basic_form.addRow("强度：", self.strength_slider)
-        basic_form.addRow("暗角：", self.vignette_mode)
-        basic_form.addRow("暗角强度：", self.vignette_amount)
-        basic_form.addRow("曝光 (EV)：", self.exposure_slider)
-        basic_form.addRow("色温：", self.temp_slider)
-        basic_form.addRow("对比度：", self.contrast_slider)
-        basic_form.addRow("高光：", self.highlights_slider)
-        basic_form.addRow("阴影：", self.shadows_slider)
-        basic_form.addRow("鲜艳度：", self.vibrance_slider)
-        basic_form.addRow("饱和度：", self.saturation_slider)
-        basic_form.addRow("清晰度：", self.clarity_slider)
-        basic_form.addRow("", self.auto_check)
-        basic_form.addRow("后端：", self.backend_combo)
+        # Compact params: short sliders, multi-column grid to reduce vertical scroll
+        for _s in (
+            self.strength_slider,
+            self.vignette_amount,
+            self.exposure_slider,
+            self.temp_slider,
+            self.clarity_slider,
+            self.contrast_slider,
+            self.highlights_slider,
+            self.shadows_slider,
+            self.vibrance_slider,
+            self.saturation_slider,
+            self.grain_size,
+            self.grain_density,
+            self.grain_rough,
+            self.grain_chroma,
+        ):
+            _short_slider(_s)
 
-        # Right column: grain
-        grain_box = QtWidgets.QGroupBox("颗粒调节")
-        grain_form = QtWidgets.QFormLayout(grain_box)
-        grain_top = QtWidgets.QHBoxLayout()
-        grain_top.addWidget(self.grain_check)
-        grain_top.addWidget(self.grain_preset_btn)
-        grain_top.addStretch(1)
-        grain_form.addRow(grain_top)
-        grain_form.addRow("类型：", self.grain_type)
-        grain_form.addRow("大小：", self.grain_size)
-        grain_form.addRow("密度：", self.grain_density)
-        grain_form.addRow("粗糙：", self.grain_rough)
-        grain_form.addRow("彩色混合：", self.grain_chroma)
+        self.preset_combo.setMaximumWidth(180)
+        self.vignette_mode.setMaximumWidth(100)
+        self.backend_combo.setMaximumWidth(120)
+        self.grain_type.setMaximumWidth(140)
+        self.grain_preset_btn.setMaximumWidth(88)
 
-        cols = QtWidgets.QHBoxLayout()
-        cols.addWidget(basic_box, 1)
-        cols.addWidget(grain_box, 1)
+        def _pair_row(label: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+            w = QtWidgets.QWidget()
+            row = QtWidgets.QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 4, 0)
+            row.setSpacing(4)
+            lab = QtWidgets.QLabel(label)
+            lab.setMinimumWidth(48)
+            lab.setMaximumWidth(56)
+            lab.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(lab)
+            row.addWidget(widget, 1)
+            return w
+
+        params_box = QtWidgets.QGroupBox("参数")
+        grid = QtWidgets.QGridLayout(params_box)
+        grid.setContentsMargins(6, 8, 6, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+
+        # Row 0: preset / strength / vignette / vignette amount
+        grid.addWidget(_pair_row("预设", self.preset_combo), 0, 0)
+        grid.addWidget(_pair_row("强度", self.strength_slider), 0, 1)
+        grid.addWidget(_pair_row("暗角", self.vignette_mode), 0, 2)
+        grid.addWidget(_pair_row("暗角量", self.vignette_amount), 0, 3)
+
+        # Row 1: exposure / temp / contrast / clarity
+        grid.addWidget(_pair_row("曝光", self.exposure_slider), 1, 0)
+        grid.addWidget(_pair_row("色温", self.temp_slider), 1, 1)
+        grid.addWidget(_pair_row("对比", self.contrast_slider), 1, 2)
+        grid.addWidget(_pair_row("清晰", self.clarity_slider), 1, 3)
+
+        # Row 2: highlights / shadows / vibrance / saturation
+        grid.addWidget(_pair_row("高光", self.highlights_slider), 2, 0)
+        grid.addWidget(_pair_row("阴影", self.shadows_slider), 2, 1)
+        grid.addWidget(_pair_row("鲜艳", self.vibrance_slider), 2, 2)
+        grid.addWidget(_pair_row("饱和", self.saturation_slider), 2, 3)
+
+        # Row 3: grain controls
+        grain_head = QtWidgets.QWidget()
+        gh = QtWidgets.QHBoxLayout(grain_head)
+        gh.setContentsMargins(0, 0, 4, 0)
+        gh.setSpacing(4)
+        gh.addWidget(self.grain_check)
+        gh.addWidget(self.grain_preset_btn)
+        gh.addStretch(1)
+        grid.addWidget(grain_head, 3, 0)
+        grid.addWidget(_pair_row("类型", self.grain_type), 3, 1)
+        grid.addWidget(_pair_row("大小", self.grain_size), 3, 2)
+        grid.addWidget(_pair_row("密度", self.grain_density), 3, 3)
+
+        # Row 4: grain rough/chroma + auto + backend
+        grid.addWidget(_pair_row("粗糙", self.grain_rough), 4, 0)
+        grid.addWidget(_pair_row("彩混", self.grain_chroma), 4, 1)
+        grid.addWidget(self.auto_check, 4, 2)
+        grid.addWidget(_pair_row("后端", self.backend_combo), 4, 3)
+
+        for c in range(4):
+            grid.setColumnStretch(c, 1)
 
         btns = QtWidgets.QHBoxLayout()
+        btns.setSpacing(6)
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
         btns.addStretch(1)
 
         params_outer = QtWidgets.QVBoxLayout()
-        params_outer.addLayout(cols, 1)
+        params_outer.setContentsMargins(4, 4, 4, 4)
+        params_outer.setSpacing(4)
+        params_outer.addWidget(params_box)
         params_outer.addLayout(btns)
-        params_outer.addWidget(QtWidgets.QLabel("提示：拖动粗分隔条调节预览/参数高度；导出始终全分辨率。"))
+        tip = QtWidgets.QLabel("提示：拖动粗分隔条调节预览/参数高度；导出始终全分辨率。")
+        tip.setWordWrap(True)
+        params_outer.addWidget(tip)
         params_widget = QtWidgets.QWidget()
         params_widget.setLayout(params_outer)
         params_scroll = QtWidgets.QScrollArea()
         params_scroll.setWidgetResizable(True)
         params_scroll.setWidget(params_widget)
-        params_scroll.setMinimumHeight(140)
+        params_scroll.setMinimumHeight(120)
+        params_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        params_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         preview_wrap = QtWidgets.QWidget()
         preview_layout = QtWidgets.QVBoxLayout(preview_wrap)
@@ -326,7 +385,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_splitter.setStretchFactor(0, 3)
         self.right_splitter.setStretchFactor(1, 1)
         self.right_splitter.setHandleWidth(10)  # thicker vertical drag handle
-        self.right_splitter.setSizes([520, 260])
+        self.right_splitter.setSizes([480, 300])
 
         lw = QtWidgets.QWidget()
         lw.setLayout(left)
