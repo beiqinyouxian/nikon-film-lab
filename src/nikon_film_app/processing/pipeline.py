@@ -44,6 +44,7 @@ class ProcessOptions:
     shadows: int = 0              # -100..100
     vibrance: int = 0             # -100..100
     saturation: int = 0           # -100..100
+ 
 
 
 class ImageProcessor:
@@ -53,6 +54,7 @@ class ImageProcessor:
 
     def list_presets(self) -> list[str]:
         return list(self.presets.keys())
+
 
     def process_bgr01(self, img_bgr01: np.ndarray, options: ProcessOptions) -> np.ndarray:
         # Ensure float32 in 0..1 and 3 channels
