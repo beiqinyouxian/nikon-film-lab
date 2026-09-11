@@ -447,13 +447,19 @@ class MainWindow(QtWidgets.QMainWindow):
             _short_slider(l)
             self.hsl_lum_sliders.append(l)
             split_grid.addWidget(l, 2, col)
-        # 行说明文本
+        # 行说明文本放在第 9 列，避免覆盖第 8 列（品红）
+        leg_col = 8
         leg_sat = QtWidgets.QLabel("饱和")
         leg_sat.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         leg_lum = QtWidgets.QLabel("明度")
         leg_lum.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        split_grid.addWidget(leg_sat, 1, 7)
-        split_grid.addWidget(leg_lum, 2, 7)
+        split_grid.addWidget(leg_sat, 1, leg_col, 1, 1)
+        split_grid.addWidget(leg_lum, 2, leg_col, 1, 1)
+        # 列伸展：0..7 为色带列，均匀分布；第 8 列为小标签列
+        for c in range(8):
+            split_grid.setColumnStretch(c, 1)
+        split_grid.setColumnStretch(leg_col, 0)
+        split_grid.setColumnMinimumWidth(leg_col, 36)
 
         # 组装外层布局（带分割线）
         params_outer = QtWidgets.QVBoxLayout()

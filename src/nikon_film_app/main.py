@@ -46,7 +46,10 @@ def main() -> None:
           border: 1px solid #505050; border-radius: 6px; margin-top: 10px;
           padding-top: 8px; background-color: #4a4a4a;
         }
-        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #f0f0f0; }
+        QGroupBox::title {
+          subcontrol-origin: margin; left: 8px; padding: 0 4px;
+          color: #f8f8f8; font-weight: 600; font-size: 13px; letter-spacing: 0.2px;
+        }
         QLabel { color: #ededed; }
         QLineEdit, QComboBox, QAbstractSpinBox, QTextEdit {
           background-color: #565656; border: 1px solid #626262; padding: 4px 6px; border-radius: 4px; color: #f0f0f0;
