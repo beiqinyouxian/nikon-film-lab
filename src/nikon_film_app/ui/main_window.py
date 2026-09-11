@@ -86,6 +86,8 @@ class ProcessorThread(QtCore.QThread):
                 self.progress_changed.emit(idx, total)
                 # Deterministic grain per file
                 self.options.grain_seed = zlib.adler32(item.path.encode("utf-8")) & 0xFFFFFFFF
+                # Deterministic FX per file (separate namespace)
+                self.options.fx_seed = zlib.adler32((item.path + "#fx").encode("utf-8")) & 0xFFFFFFFF
                 out = self._process_bgr(item.src_bgr8)
                 # Save
                 base = os.path.basename(item.path)
@@ -205,6 +207,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vignette_amount.setRange(0, 100)
         self.vignette_amount.setValue(0)
         self.vignette_amount.setEnabled(False)
+        # 独立特色效果控件
+        self.fx_lens_check = QtWidgets.QCheckBox("镜头老化")
+        self.fx_lens_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.fx_lens_slider.setRange(0, 100)
+        self.fx_lens_slider.setValue(0)
+        self.fx_scratches_check = QtWidgets.QCheckBox("镜片划伤")
+        self.fx_scratches_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.fx_scratches_slider.setRange(0, 100)
+        self.fx_scratches_slider.setValue(0)
+        self.fx_defects_check = QtWidgets.QCheckBox("胶片缺陷")
+        self.fx_defects_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.fx_defects_slider.setRange(0, 100)
+        self.fx_defects_slider.setValue(0)
+        self.fx_partial_check = QtWidgets.QCheckBox("部分曝光")
+        self.fx_partial_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.fx_partial_slider.setRange(0, 100)
+        self.fx_partial_slider.setValue(0)
         def _bipolar(slider: QtWidgets.QSlider, lo: int, hi: int) -> None:
             slider.setRange(lo, hi)
             slider.setValue(0)
@@ -277,6 +296,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.shadows_slider,
             self.vibrance_slider,
             self.saturation_slider,
+            self.fx_lens_slider,
+            self.fx_scratches_slider,
+            self.fx_defects_slider,
+            self.fx_partial_slider,
             self.grain_size,
             self.grain_density,
             self.grain_rough,
@@ -348,7 +371,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for c in range(4):
             grid.setColumnStretch(c, 1)
-
+        # 特色效果：以4列一行的紧凑单元加入参数网格
+        def _fx_cell(check: QtWidgets.QCheckBox, slider: QtWidgets.QSlider) -> QtWidgets.QWidget:
+            w = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(4)
+            h.addWidget(check)
+            h.addWidget(slider, 1)
+            return w
+        grid.addWidget(_fx_cell(self.fx_lens_check, self.fx_lens_slider), 5, 0)
+        grid.addWidget(_fx_cell(self.fx_scratches_check, self.fx_scratches_slider), 5, 1)
+        grid.addWidget(_fx_cell(self.fx_defects_check, self.fx_defects_slider), 5, 2)
+        grid.addWidget(_fx_cell(self.fx_partial_check, self.fx_partial_slider), 5, 3)
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(6)
         btns.addWidget(self.process_btn)
@@ -433,6 +468,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vibrance_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.saturation_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
+        # 特色效果信号
+        self.fx_lens_check.toggled.connect(self.on_special_fx_changed)
+        self.fx_lens_slider.valueChanged.connect(self.on_special_fx_changed)
+        self.fx_scratches_check.toggled.connect(self.on_special_fx_changed)
+        self.fx_scratches_slider.valueChanged.connect(self.on_special_fx_changed)
+        self.fx_defects_check.toggled.connect(self.on_special_fx_changed)
+        self.fx_defects_slider.valueChanged.connect(self.on_special_fx_changed)
+        self.fx_partial_check.toggled.connect(self.on_special_fx_changed)
+        self.fx_partial_slider.valueChanged.connect(self.on_special_fx_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
 
@@ -734,6 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_cache[path] = preview
         # Set deterministic grain seed per image path
         self._set_grain_seed_for_path(path)
+        self._set_fx_seed_for_path(path)
         return preview
 
     def _process_preview(self, bgr8: np.ndarray) -> np.ndarray:
@@ -751,11 +796,15 @@ class MainWindow(QtWidgets.QMainWindow):
         no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
         no_clarity = (getattr(self.thread.options, "clarity", 0) == 0)
         no_contrast = (getattr(self.thread.options, "contrast", 0) == 0)
+        no_special = (not getattr(self.thread.options, "enable_lens_aging", False)) and \
+                     (not getattr(self.thread.options, "enable_scratches", False)) and \
+                     (not getattr(self.thread.options, "enable_film_defects", False)) and \
+                     (not getattr(self.thread.options, "enable_partial_exposure", False))
         no_hi = (getattr(self.thread.options, "highlights", 0) == 0)
         no_sh = (getattr(self.thread.options, "shadows", 0) == 0)
         no_vib = (getattr(self.thread.options, "vibrance", 0) == 0)
         no_sat = (getattr(self.thread.options, "saturation", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast and no_hi and no_sh and no_vib and no_sat
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast and no_hi and no_sh and no_vib and no_sat and no_special
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -781,6 +830,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_grain_seed_for_path(self, path: str) -> None:
         self.thread.options.grain_seed = zlib.adler32(path.encode("utf-8")) & 0xFFFFFFFF
+    def _set_fx_seed_for_path(self, path: str) -> None:
+        # Use a slightly different namespace to decorrelate from grain
+        self.thread.options.fx_seed = zlib.adler32((path + "#fx").encode("utf-8")) & 0xFFFFFFFF
 
     def on_progress(self, cur: int, total: int) -> None:
         total = max(total, 1)
@@ -813,6 +865,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vignette_mode.setCurrentIndex(0)
         self.vignette_amount.setValue(0)
         self.vignette_amount.setEnabled(False)
+        # 特色效果复位
+        self.fx_lens_check.setChecked(False)
+        self.fx_lens_slider.setValue(0)
+        self.fx_scratches_check.setChecked(False)
+        self.fx_scratches_slider.setValue(0)
+        self.fx_defects_check.setChecked(False)
+        self.fx_defects_slider.setValue(0)
+        self.fx_partial_check.setChecked(False)
+        self.fx_partial_slider.setValue(0)
         self.exposure_slider.setValue(0)
         self.temp_slider.setValue(0)
         self.clarity_slider.setValue(0)
@@ -846,6 +907,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.shadows = 0
         self.thread.options.vibrance = 0
         self.thread.options.saturation = 0
+        # FX options
+        self.thread.options.enable_lens_aging = False
+        self.thread.options.lens_aging = 0
+        self.thread.options.enable_scratches = False
+        self.thread.options.scratches = 0
+        self.thread.options.enable_film_defects = False
+        self.thread.options.film_defects = 0
+        self.thread.options.enable_partial_exposure = False
+        self.thread.options.partial_exposure = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
+    def on_special_fx_changed(self) -> None:
+        # 更新独立特效参数并触发预览
+        self.thread.options.enable_lens_aging = self.fx_lens_check.isChecked()
+        self.thread.options.lens_aging = self.fx_lens_slider.value()
+        self.thread.options.enable_scratches = self.fx_scratches_check.isChecked()
+        self.thread.options.scratches = self.fx_scratches_slider.value()
+        self.thread.options.enable_film_defects = self.fx_defects_check.isChecked()
+        self.thread.options.film_defects = self.fx_defects_slider.value()
+        self.thread.options.enable_partial_exposure = self.fx_partial_check.isChecked()
+        self.thread.options.partial_exposure = self.fx_partial_slider.value()
+        self._request_preview_update()
