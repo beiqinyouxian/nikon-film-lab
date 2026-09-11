@@ -621,19 +621,48 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         super().closeEvent(event)
 
+    def _settings(self) -> QtCore.QSettings:
+        return QtCore.QSettings("nikon-film-lab", "nikon-film-lab")
+
+    def _last_import_dir(self) -> str:
+        try:
+            d = self._settings().value("last_import_dir", "", type=str)
+        except Exception:
+            d = ""
+        if isinstance(d, str) and d and os.path.isdir(d):
+            return d
+        return os.getcwd()
+
+    def _remember_import_dir(self, path: str) -> None:
+        if not path:
+            return
+        d = path if os.path.isdir(path) else os.path.dirname(path)
+        if d and os.path.isdir(d):
+            try:
+                self._settings().setValue("last_import_dir", d)
+            except Exception:
+                pass
+
     def on_files_dropped(self, paths: List[str]) -> None:
         self._add_paths(paths)
         self._request_preview_update()
 
     def on_add_files(self) -> None:
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择文件", "", "Images (*.nef *.NEF *.jpg *.jpeg)")
+        start = self._last_import_dir()
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "选择文件", start, "Images (*.nef *.NEF *.jpg *.jpeg)"
+        )
+        if files:
+            self._remember_import_dir(files[0])
         self._add_paths(files)
         self._request_preview_update()
 
     def on_add_dir(self) -> None:
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹", "")
+        start = self._last_import_dir()
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹", start)
         if not d:
             return
+        self._remember_import_dir(d)
         paths = []
         for root, _, files in os.walk(d):
             for f in files:
@@ -644,11 +673,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._request_preview_update()
 
     def _add_paths(self, paths: List[str]) -> None:
+        added = False
         for p in paths:
             if not is_supported(p):
                 continue
             item = QtWidgets.QListWidgetItem(p)
             self.list_widget.addItem(item)
+            if not added:
+                self._remember_import_dir(p)
+                added = True
         # Select the last added item to show immediate preview
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(self.list_widget.count() - 1)
