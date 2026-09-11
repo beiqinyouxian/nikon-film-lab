@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # Collect all data/binaries/hiddenimports for critical packages
 datas = []
@@ -13,6 +13,8 @@ for pkg in ("PySide6", "cv2", "rawpy"):
     datas += d
     binaries += b
     hiddenimports += h
+# Ensure our application package and its submodules are included
+hiddenimports += collect_submodules("nikon_film_app")
 
 block_cipher = None
 
@@ -25,7 +27,7 @@ entry_script = str(REPO_ROOT / "src" / "nikon_film_app" / "main.py")
 
 a = Analysis(
     [entry_script],
-    pathex=[str(REPO_ROOT)],
+    pathex=[str(REPO_ROOT), str(REPO_ROOT / "src")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
