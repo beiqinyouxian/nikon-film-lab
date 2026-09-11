@@ -111,6 +111,32 @@ def _apply_color_temp(img: np.ndarray, temp01: float) -> np.ndarray:
     r = np.clip(r * r_gain, 0, 1)
     return cv2.merge([b, g, r]).astype(np.float32)
 
+
+def _apply_clarity(img: np.ndarray, clarity: float) -> np.ndarray:
+    """
+    Film-like midtone local contrast.
+    clarity in [-1.0, 1.0], negative softens, positive increases microcontrast.
+    Midtone mask emphasizes around 0.5 luminance to avoid harsh ringing in shadows/highlights.
+    """
+    if abs(clarity) < 1e-6:
+        return img
+    l = _luminance_bgr(img)
+    # Midtone emphasis mask
+    sigma = 0.22
+    midmask = np.exp(-((l - 0.5) ** 2) / (2 * sigma * sigma)).astype(np.float32)
+    midmask3 = _ensure_3c(midmask)
+    # Detail via unsharp
+    base_blur = cv2.GaussianBlur(img, (0, 0), sigmaX=1.2)
+    detail = img - base_blur
+    amount = float(clarity)
+    if amount >= 0:
+        out = img + amount * 0.6 * detail * midmask3
+    else:
+        # Soften: blend towards base_blur using midtone mask
+        t = min(1.0, -amount * 0.6)
+        out = img * (1.0 - t * midmask3) + base_blur * (t * midmask3)
+    return _clip01(out)
+
 def _adjust_contrast(img: np.ndarray, contrast: float) -> np.ndarray:
     # contrast >0 increases contrast around mid-gray 0.5
     return _clip01((img - 0.5) * (1.0 + contrast) + 0.5)
@@ -304,7 +330,7 @@ def _auto_baseline(img: np.ndarray) -> np.ndarray:
     return _clip01(img * gain)
 
 
-ProcessFunc = Callable[[np.ndarray, Accelerator, float, GrainParams, bool, Optional[float], bool, Optional[int], float, float], np.ndarray]
+ProcessFunc = Callable[[np.ndarray, Accelerator, float, GrainParams, bool, Optional[float], bool, Optional[int], float, float, float], np.ndarray]
 
 
 @dataclass
@@ -344,6 +370,7 @@ def _build_preset(
         grain_seed: Optional[int],
         exposure_ev: float,
         temp01: float,
+        clarity: float,
     ) -> np.ndarray:
         work = img.copy()
         if auto_base:
@@ -383,6 +410,8 @@ def _build_preset(
             work = _apply_exposure(work, exposure_ev)
         if abs(temp01) > 1e-6:
             work = _apply_color_temp(work, temp01)
+        if abs(clarity) > 1e-6:
+            work = _apply_clarity(work, clarity)
         return _blend(img, work, strength01)
 
     return FilmPreset(name=name, process=proc)

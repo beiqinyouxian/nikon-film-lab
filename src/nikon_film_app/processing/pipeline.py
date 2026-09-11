@@ -28,6 +28,7 @@ class ProcessOptions:
     # Manual exposure and color temperature
     exposure_ev_x100: int = 0     # -200..200 represents -2..+2 EV
     temp_bias: int = 0            # -100..100 (cooler..warmer)
+    clarity: int = 0              # -50..100 (negative softens), default 0
 
 
 class ImageProcessor:
@@ -74,6 +75,7 @@ class ImageProcessor:
         # Manual exposure and color temperature
         exposure_ev = max(-2.0, min(2.0, options.exposure_ev_x100 / 100.0))
         temp01 = max(-1.0, min(1.0, options.temp_bias / 100.0))
+        clarity_amount = max(-0.5, min(1.0, options.clarity / 100.0))
         out = preset.process(
             img,
             self.accel,
@@ -85,6 +87,7 @@ class ImageProcessor:
             options.grain_seed,
             exposure_ev,
             temp01,
+            clarity_amount,
         )
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 

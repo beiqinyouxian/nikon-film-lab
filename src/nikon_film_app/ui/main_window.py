@@ -243,6 +243,13 @@ class MainWindow(QtWidgets.QMainWindow):
         exp_form = QtWidgets.QFormLayout(exp_box)
         exp_form.addRow("曝光(EV)：", self.exposure_slider)
         exp_form.addRow("色温：", self.temp_slider)
+        # Clarity control
+        clarity_box = QtWidgets.QGroupBox("清晰度（Clarity）")
+        self.clarity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.clarity_slider.setRange(-50, 100)
+        self.clarity_slider.setValue(0)
+        clarity_layout = QtWidgets.QVBoxLayout(clarity_box)
+        clarity_layout.addWidget(self.clarity_slider)
         bottom_controls = QtWidgets.QWidget()
         bc_layout = QtWidgets.QVBoxLayout(bottom_controls)
         bc_layout.setContentsMargins(0, 0, 0, 0)
@@ -250,6 +257,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bc_layout.addWidget(grain_box)
         bc_layout.addWidget(vig_box)
         bc_layout.addWidget(exp_box)
+        bc_layout.addWidget(clarity_box)
         bc_layout.addWidget(self.auto_check)
         backend_row = QtWidgets.QHBoxLayout()
         backend_row.addWidget(QtWidgets.QLabel("后端："))
@@ -320,6 +328,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vignette_amount.valueChanged.connect(self.on_vignette_changed)
         self.exposure_slider.valueChanged.connect(self.on_exposure_temp_changed)
         self.temp_slider.valueChanged.connect(self.on_exposure_temp_changed)
+        self.clarity_slider.valueChanged.connect(self.on_clarity_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
@@ -429,6 +438,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_exposure_temp_changed(self) -> None:
         self.thread.options.exposure_ev_x100 = self.exposure_slider.value()
         self.thread.options.temp_bias = self.temp_slider.value()
+        self._request_preview_update()
+
+    def on_clarity_changed(self) -> None:
+        self.thread.options.clarity = self.clarity_slider.value()
         self._request_preview_update()
 
     def on_backend_changed(self, text: str) -> None:
@@ -542,7 +555,8 @@ class MainWindow(QtWidgets.QMainWindow):
         no_vignette = (getattr(self.thread.options, "vignette_mode", "off") == "off")
         no_exposure = (getattr(self.thread.options, "exposure_ev_x100", 0) == 0)
         no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp
+        no_clarity = (getattr(self.thread.options, "clarity", 0) == 0)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -598,6 +612,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.grain_chroma.setValue(0)
         self.exposure_slider.setValue(0)
         self.temp_slider.setValue(0)
+        self.clarity_slider.setValue(0)
         # preset back to 不处理
         idx_id = self.preset_combo.findText("不处理")
         if idx_id >= 0:
@@ -614,6 +629,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.grain_chroma_mix = 0
         self.thread.options.exposure_ev_x100 = 0
         self.thread.options.temp_bias = 0
+        self.thread.options.clarity = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
