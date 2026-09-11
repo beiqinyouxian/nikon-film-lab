@@ -71,7 +71,7 @@ class ProcessorThread(QtCore.QThread):
                 # Save
                 base = os.path.basename(item.path)
                 name, _ = os.path.splitext(base)
-                out_path = os.path.join(self.export_dir, f\"{name}_film.jpg\")
+                out_path = os.path.join(self.export_dir, f"{name}_film.jpg")
                 exif = item.exif_bytes if not item.is_raw else None
                 save_jpeg_bgr8(out_path, out, quality=95, exif_bytes=exif)
                 self.file_processed.emit(item.path, True, out_path)
