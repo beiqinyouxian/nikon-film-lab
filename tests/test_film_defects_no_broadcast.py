@@ -3,7 +3,7 @@ import numpy as np
 from nikon_film_app.processing.pipeline import ImageProcessor, ProcessOptions
 
 
-def test_film_defects_no_broadcast_shapes():
+def test_expired_and_lightleak_no_broadcast_shapes():
     # Synthetic HxWx3 float image in 0..1
     h, w = 1065, 1600
     y = np.linspace(0, 1, h, dtype=np.float32)[:, None]
@@ -22,11 +22,10 @@ def test_film_defects_no_broadcast_shapes():
         temp_bias=0,
         clarity=0,
         contrast=0,
-        enable_film_defects=True,
-        lens_aging_amount=40,
-        scratches_amount=40,
-        dust_amount=40,
-        partial_exposure_amount=40,
+        enable_expired_film=True,
+        expired_film=40,
+        enable_light_leak=True,
+        light_leak=40,
         defects_seed=123,
     )
 

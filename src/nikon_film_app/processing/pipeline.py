@@ -37,10 +37,11 @@ class ProcessOptions:
     lens_aging: int = 0                 # 0..100
     enable_scratches: bool = False
     scratches: int = 0                  # 0..100
-    enable_film_defects: bool = False
-    film_defects: int = 0               # 0..100
-    enable_partial_exposure: bool = False
-    partial_exposure: int = 0           # 0..100
+    # Renamed FX
+    enable_expired_film: bool = False
+    expired_film: int = 0               # 0..100
+    enable_light_leak: bool = False
+    light_leak: int = 0                 # 0..100
     fx_seed: Optional[int] = None
     # Color splitter (HSL per-color bands; independent of presets)
     enable_color_splitter: bool = True
@@ -247,82 +248,81 @@ class ImageProcessor:
         out = self._clip01(img * (1.0 - alpha3) + overlay * alpha3)
         return out
 
-    def _film_defects(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+    def _expired_film(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+        """Expired film look: dye fade, muddy shadows, lifted blacks, color cast, slight mottling."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 1)
-        out = img.copy()
-        # Dust specks: small dark or bright soft dots
-        speck_count = int(min(200, (3 + 12 * t) * max(1.0, (h * w) / (1200 * 1200))))
-        dust = out.copy()
-        alpha = np.zeros((h, w, 1), dtype=np.float32)
-        for _ in range(speck_count):
+        out = img.astype(np.float32).copy()
+        # Base fog (lift blacks)
+        fog = 0.04 + 0.10 * t
+        out = self._clip01(out * (1.0 - 0.5 * t) + fog)
+        # Mild overall saturation loss
+        out = _adjust_saturation(out, -0.25 * t)
+        # Cross-process style color shift (random green-magenta or warm)
+        if rng.random() < 0.5:
+            cast = np.array([0.00, 0.03 + 0.10 * t, 0.06 * t], dtype=np.float32)[None, None, :]  # BGR ~ cyan/green
+        else:
+            cast = np.array([0.02 + 0.08 * t, 0.02 * t, 0.00], dtype=np.float32)[None, None, :]  # warm
+        out = self._clip01(out + cast)
+        # Lower contrast a bit and muddy shadows (lift)
+        out = _adjust_contrast(out, -0.20 * t)
+        out = self._clip01(out + (0.08 * t) * (1.0 - self._radial_mask(h, w))[..., None] * 0.5)
+        # Uneven dye fade via low-frequency color noise
+        noise = rng.normal(0.0, 1.0, size=(h, w, 3)).astype(np.float32)
+        low = cv2.GaussianBlur(noise, (0, 0), sigmaX=18.0)
+        out = self._clip01(out + 0.04 * t * low)
+        # Sparse fine dust at very low opacity
+        specks = np.zeros((h, w), dtype=np.float32)
+        n = int(20 * t)
+        for _ in range(n):
             cx = int(rng.integers(0, w))
             cy = int(rng.integers(0, h))
-            radius = int(max(1, int(rng.uniform(0.3, 1.8) * (min(h, w) / 300.0))))
-            color = (0.0, 0.0, 0.0) if rng.random() < 0.7 else (1.0, 1.0, 1.0)
-            cv2.circle(dust, (cx, cy), radius, color, thickness=-1, lineType=cv2.LINE_AA)
-            cv2.circle(alpha, (cx, cy), int(radius * 1.5), (0.05 + 0.20 * t,), thickness=-1, lineType=cv2.LINE_AA)
-        out = self._clip01(out * (1.0 - self._ensure_3c(alpha)) + dust * self._ensure_3c(alpha))
-        # Light leak edges: pick a random edge and add warm gradient
-        if rng.random() < 0.9:  # often present when enabled
-            leak_color = np.array([0.06, 0.04, 0.0], dtype=np.float32)  # warm in BGR
-            side = int(rng.integers(0, 4))  # 0=L,1=T,2=R,3=B
-            # distance map from chosen edge
-            if side == 0:
-                dist = np.tile(np.linspace(0, 1, w, dtype=np.float32)[None, :, None], (h, 1, 1))
-            elif side == 2:
-                dist = np.tile(np.linspace(1, 0, w, dtype=np.float32)[None, :, None], (h, 1, 1))
-            elif side == 1:
-                dist = np.tile(np.linspace(0, 1, h, dtype=np.float32)[:, None, None], (1, w, 1))
-            else:
-                dist = np.tile(np.linspace(1, 0, h, dtype=np.float32)[:, None, None], (1, w, 1))
-            grad = np.exp(-4.0 * dist)  # stronger near edge
-            strength = (0.08 + 0.25 * t) * float(rng.uniform(0.6, 1.2))
-            out = self._clip01(out + strength * grad * leak_color[None, None, :])
-        # Subtle frame edge unevenness: very low amplitude random mask
-        noise = rng.normal(0.0, 1.0, size=(h, w, 1)).astype(np.float32)
-        lowfreq = cv2.GaussianBlur(noise, (0, 0), sigmaX=40.0)
-        edge_mask = 1.0 - self._radial_mask(h, w)
-        edge_mask = cv2.GaussianBlur(edge_mask.astype(np.float32), (0, 0), sigmaX=6.0)[..., None]
-        out = self._clip01(out * (1.0 - 0.03 * t * edge_mask * lowfreq))
+            r = int(max(1, rng.integers(1, 2 + int(2 * t))))
+            cv2.circle(specks, (cx, cy), r, color=1.0, thickness=-1, lineType=cv2.LINE_AA)
+        specks = cv2.GaussianBlur(specks, (0, 0), sigmaX=0.6)
+        out = self._clip01(out * (1.0 - 0.06 * t * self._ensure_3c(specks)))
         return out
 
-    def _partial_exposure(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+    def _light_leak(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+        """Analog-like light leak from edges/corners with organic shapes and warm/magenta casts."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 2)
         out = img.copy()
-        # Choose an edge and an angular wedge
-        side = int(rng.integers(0, 4))
-        over = rng.random() < 0.7  # mostly overexposed light strike
-        color = np.array([0.05, 0.03, 0.0], dtype=np.float32) if over else np.array([0.0, 0.0, 0.0], dtype=np.float32)
-        # Build a mask that decays from the edge inward and varies by angle
-        yy, xx = np.mgrid[0:h, 0:w]
-        if side == 0:  # left
-            d = xx.astype(np.float32) / max(1, w)
-        elif side == 2:  # right
-            d = (w - 1 - xx).astype(np.float32) / max(1, w)
-        elif side == 1:  # top
-            d = yy.astype(np.float32) / max(1, h)
-        else:  # bottom
-            d = (h - 1 - yy).astype(np.float32) / max(1, h)
-        d = np.clip(d, 0.0, 1.0)
-        ang = np.arctan2(yy - h / 2.0, xx - w / 2.0)  # -pi..pi
-        center_angle = float(rng.uniform(-np.pi, np.pi))
-        spread = float(rng.uniform(0.6, 1.6))  # radians
-        ang_weight = np.exp(-((ang - center_angle) ** 2) / (2 * (spread ** 2)))
-        mask = (np.exp(-5.0 * d) * ang_weight).astype(np.float32)
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=8.0)
-        mask3 = self._ensure_3c(mask)
-        # Apply as localized exposure shift with slight warm color if overexposed
-        amt = (0.15 + 0.35 * t) * float(rng.uniform(0.7, 1.3))
-        if over:
-            out = self._clip01(out * (1.0 - amt * mask3) + (out + color) * (amt * mask3))
+        # Base edge distance
+        y, x = np.ogrid[:h, :w]
+        dist_left = x / max(1, w - 1)
+        dist_right = (w - 1 - x) / max(1, w - 1)
+        dist_top = y / max(1, h - 1)
+        dist_bottom = (h - 1 - y) / max(1, h - 1)
+        dists = [dist_left, dist_right, dist_top, dist_bottom]
+        # Pick 1-2 edges
+        edges = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
+        mask2d = np.zeros((h, w), dtype=np.float32)
+        for e in edges:
+            d = dists[e].astype(np.float32)
+            # Organic shape via thresholded blurred noise multiplied by distance falloff
+            shape = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+            shape = cv2.GaussianBlur(shape, (0, 0), sigmaX=8.0 + 12.0 * t)
+            shape = (shape - shape.min()) / max(1e-6, shape.max() - shape.min())
+            fall = np.exp(-4.0 * d)
+            mask2d = np.maximum(mask2d, (shape * fall).astype(np.float32))
+        mask2d = cv2.GaussianBlur(mask2d, (0, 0), sigmaX=6.0)
+        mask2d = np.clip(mask2d, 0.0, 1.0)
+        # Warm or magenta cast
+        if rng.random() < 0.75:
+            color = np.array([0.06, 0.10 + 0.25 * t, 0.01], dtype=np.float32)  # warm/orange (BGR)
         else:
-            out = self._clip01(out * (1.0 - 0.5 * amt * mask3))  # localized underexposure
+            color = np.array([0.12, 0.02, 0.10 + 0.20 * t], dtype=np.float32)  # cool magenta
+        mask3 = self._ensure_3c(mask2d ** (1.2))
+        strength = 0.20 + 0.60 * t
+        out = self._clip01(out + strength * mask3 * color[None, None, :])
+        # Subtle bloom on strong mask areas
+        glow = cv2.GaussianBlur(out, (0, 0), sigmaX=3.0)
+        out = self._clip01(out * (1.0 - 0.25 * t * mask3) + glow * (0.25 * t * mask3))
         return out
 
     def _apply_special_fx(self, img: np.ndarray, options: ProcessOptions) -> np.ndarray:
@@ -330,16 +330,21 @@ class ImageProcessor:
         # Normalize intensities
         lens_t = max(0.0, min(1.0, options.lens_aging / 100.0)) if options.enable_lens_aging else 0.0
         scratch_t = max(0.0, min(1.0, options.scratches / 100.0)) if options.enable_scratches else 0.0
-        defects_t = max(0.0, min(1.0, options.film_defects / 100.0)) if options.enable_film_defects else 0.0
-        partial_t = max(0.0, min(1.0, options.partial_exposure / 100.0)) if options.enable_partial_exposure else 0.0
+        # Backward-compat attribute names
+        enable_expired = getattr(options, "enable_expired_film", getattr(options, "enable_film_defects", False))
+        expired_val = getattr(options, "expired_film", getattr(options, "film_defects", 0))
+        enable_leak = getattr(options, "enable_light_leak", getattr(options, "enable_partial_exposure", False))
+        leak_val = getattr(options, "light_leak", getattr(options, "partial_exposure", 0))
+        defects_t = max(0.0, min(1.0, expired_val / 100.0)) if enable_expired else 0.0
+        partial_t = max(0.0, min(1.0, leak_val / 100.0)) if enable_leak else 0.0
         seed = options.fx_seed if options.fx_seed is not None else options.grain_seed
         # Order: lens aging (base look) -> partial exposure -> film defects -> scratches (top-most)
         if lens_t > 0.0:
             out = self._lens_aging(out, lens_t)
         if partial_t > 0.0:
-            out = self._partial_exposure(out, partial_t, None if seed is None else seed + 17)
+            out = self._light_leak(out, partial_t, None if seed is None else seed + 17)
         if defects_t > 0.0:
-            out = self._film_defects(out, defects_t, None if seed is None else seed + 29)
+            out = self._expired_film(out, defects_t, None if seed is None else seed + 29)
         if scratch_t > 0.0:
             out = self._scratches(out, scratch_t, None if seed is None else seed + 41)
         return out

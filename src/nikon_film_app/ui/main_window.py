@@ -216,11 +216,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fx_scratches_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.fx_scratches_slider.setRange(0, 100)
         self.fx_scratches_slider.setValue(0)
-        self.fx_defects_check = QtWidgets.QCheckBox("胶片缺陷")
+        self.fx_defects_check = QtWidgets.QCheckBox("胶片过期")
         self.fx_defects_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.fx_defects_slider.setRange(0, 100)
         self.fx_defects_slider.setValue(0)
-        self.fx_partial_check = QtWidgets.QCheckBox("部分曝光")
+        self.fx_partial_check = QtWidgets.QCheckBox("胶片漏光")
         self.fx_partial_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.fx_partial_slider.setRange(0, 100)
         self.fx_partial_slider.setValue(0)
@@ -870,8 +870,8 @@ class MainWindow(QtWidgets.QMainWindow):
         no_contrast = (getattr(self.thread.options, "contrast", 0) == 0)
         no_special = (not getattr(self.thread.options, "enable_lens_aging", False)) and \
                      (not getattr(self.thread.options, "enable_scratches", False)) and \
-                     (not getattr(self.thread.options, "enable_film_defects", False)) and \
-                     (not getattr(self.thread.options, "enable_partial_exposure", False))
+                     (not getattr(self.thread.options, "enable_expired_film", getattr(self.thread.options, \"enable_film_defects\", False))) and \
+                     (not getattr(self.thread.options, "enable_light_leak", getattr(self.thread.options, \"enable_partial_exposure\", False)))
         no_hi = (getattr(self.thread.options, "highlights", 0) == 0)
         no_sh = (getattr(self.thread.options, "shadows", 0) == 0)
         no_vib = (getattr(self.thread.options, "vibrance", 0) == 0)
@@ -996,10 +996,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.lens_aging = 0
         self.thread.options.enable_scratches = False
         self.thread.options.scratches = 0
-        self.thread.options.enable_film_defects = False
-        self.thread.options.film_defects = 0
-        self.thread.options.enable_partial_exposure = False
-        self.thread.options.partial_exposure = 0
+        # 新命名字段
+        self.thread.options.enable_expired_film = False
+        self.thread.options.expired_film = 0
+        self.thread.options.enable_light_leak = False
+        self.thread.options.light_leak = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
@@ -1009,10 +1010,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.lens_aging = self.fx_lens_slider.value()
         self.thread.options.enable_scratches = self.fx_scratches_check.isChecked()
         self.thread.options.scratches = self.fx_scratches_slider.value()
-        self.thread.options.enable_film_defects = self.fx_defects_check.isChecked()
-        self.thread.options.film_defects = self.fx_defects_slider.value()
-        self.thread.options.enable_partial_exposure = self.fx_partial_check.isChecked()
-        self.thread.options.partial_exposure = self.fx_partial_slider.value()
+        self.thread.options.enable_expired_film = self.fx_defects_check.isChecked()
+        self.thread.options.expired_film = self.fx_defects_slider.value()
+        self.thread.options.enable_light_leak = self.fx_partial_check.isChecked()
+        self.thread.options.light_leak = self.fx_partial_slider.value()
         self._request_preview_update()
 
     def on_hsl_changed(self, _value: int = 0) -> None:
