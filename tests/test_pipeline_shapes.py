@@ -24,7 +24,7 @@ def test_pipeline_no_broadcast_errors_float(preset: str):
         grain_density=40,
         grain_roughness=30,
         grain_chroma_mix=10,
-        enable_vignette=True,
+        vignette_mode="auto",
         enable_auto_baseline=True,
     )
     out = proc.process_bgr01(img, opts)
@@ -44,7 +44,7 @@ def test_pipeline_uint8_input_and_shape():
         grain_density=60,
         grain_roughness=60,
         grain_chroma_mix=30,
-        enable_vignette=True,
+        vignette_mode="auto",
         enable_auto_baseline=True,
     )
     out = proc.process_bgr01(img8.astype(np.float32) / 255.0, opts)

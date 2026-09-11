@@ -33,7 +33,7 @@ def test_pipeline_with_silver_halide_no_broadcast():
         grain_density=60,
         grain_roughness=60,
         grain_chroma_mix=0,
-        enable_vignette=True,
+        vignette_mode="auto",
         enable_auto_baseline=True,
     )
     out = proc.process_bgr01(img, opts)
