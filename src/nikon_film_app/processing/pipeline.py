@@ -385,43 +385,76 @@ class ImageProcessor:
         return out
 
     def _light_leak(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
-        """Analog-like light leak from edges/corners with organic shapes and warm/magenta casts."""
+        """Organic asymmetric 1–2 corner cubic pools + soft irregular edge bleed (noise-warp).
+        Warm orange→amber→magenta/red cast. Screen/additive + gentle bloom. Mid intensity visible."""
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 2)
-        out = img.copy()
-        # Base edge distance
+        img_f = img.astype(np.float32)
+        # Nonlinear visibility so 40–60% reads obviously analog
+        vis = float(np.clip(0.10 + (t ** 0.65) * 0.90, 0.0, 1.0))
+        # Coordinates
         y, x = np.ogrid[:h, :w]
-        dist_left = x / max(1, w - 1)
-        dist_right = (w - 1 - x) / max(1, w - 1)
-        dist_top = y / max(1, h - 1)
-        dist_bottom = (h - 1 - y) / max(1, h - 1)
-        dists = [dist_left, dist_right, dist_top, dist_bottom]
-        # Pick 1-2 edges
-        edges = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
-        mask2d = np.zeros((h, w), dtype=np.float32)
-        for e in edges:
-            d = dists[e].astype(np.float32)
-            # Organic shape via thresholded blurred noise multiplied by distance falloff
-            shape = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
-            shape = cv2.GaussianBlur(shape, (0, 0), sigmaX=8.0 + 12.0 * t)
-            shape = (shape - shape.min()) / max(1e-6, shape.max() - shape.min())
-            fall = np.exp(-4.0 * d)
-            mask2d = np.maximum(mask2d, (shape * fall).astype(np.float32))
-        mask2d = cv2.GaussianBlur(mask2d, (0, 0), sigmaX=6.0)
-        mask2d = np.clip(mask2d, 0.0, 1.0)
-        # Warm or magenta cast
-        if rng.random() < 0.75:
-            color = np.array([0.06, 0.10 + 0.25 * t, 0.01], dtype=np.float32)  # warm/orange (BGR)
-        else:
-            color = np.array([0.12, 0.02, 0.10 + 0.20 * t], dtype=np.float32)  # cool magenta
-        mask3 = self._ensure_3c(mask2d ** (1.2))
-        strength = 0.20 + 0.60 * t
-        out = self._clip01(out + strength * mask3 * color[None, None, :])
-        # Subtle bloom on strong mask areas
-        glow = cv2.GaussianBlur(out, (0, 0), sigmaX=3.0)
-        out = self._clip01(out * (1.0 - 0.25 * t * mask3) + glow * (0.25 * t * mask3))
+        nx = x.astype(np.float32) / max(1, w - 1)
+        ny = y.astype(np.float32) / max(1, h - 1)
+        # Corner pools (choose 1–2 corners)
+        corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+        pick = rng.choice(4, size=int(rng.integers(1, 3)), replace=False)
+        pool = np.zeros((h, w), dtype=np.float32)
+        for idx in pick:
+            cx, cy = corners[idx]
+            dx = np.abs(nx - cx)
+            dy = np.abs(ny - cy)
+            d = np.sqrt(dx * dx + dy * dy)
+            # Cubic pool with slight random size/power
+            pwr = 2.6 + 0.9 * rng.random()
+            rad = 1.0
+            v = np.clip(1.0 - (d / rad) ** pwr, 0.0, 1.0) ** 3.0
+            # Slight asym wobble via smoothed noise
+            n = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+            n = cv2.GaussianBlur(n, (0, 0), sigmaX=10.0 + 18.0 * vis)
+            n = (n - n.min()) / max(1e-6, n.max() - n.min())
+            v *= (0.80 + 0.35 * n)
+            pool = np.maximum(pool, v.astype(np.float32))
+        # Irregular edge bleed (distance from nearest edge with noise warp)
+        dist_l = nx
+        dist_r = 1.0 - nx
+        dist_t = ny
+        dist_b = 1.0 - ny
+        dmin = np.minimum(np.minimum(dist_l, dist_r), np.minimum(dist_t, dist_b))
+        bleed = np.exp(-5.0 * (dmin ** (0.75)))  # strong at edges, falls inwards
+        # Noise warp (low-frequency)
+        wn = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+        wn = cv2.GaussianBlur(wn, (0, 0), sigmaX=12.0 + 15.0 * vis)
+        wn = (wn - wn.min()) / max(1e-6, wn.max() - wn.min())
+        bleed *= (0.65 + 0.45 * wn)
+        bleed = cv2.GaussianBlur(bleed, (0, 0), sigmaX=3.0)
+        # Combine masks
+        leak_mask = np.clip(np.maximum(pool, 0.55 * bleed), 0.0, 1.0)
+        # Color ramp: orange -> amber -> magenta/red (BGR)
+        orange = np.array([0.03, 0.22, 0.56], dtype=np.float32)
+        amber = np.array([0.05, 0.30, 0.50], dtype=np.float32)
+        magenta_red = np.array([0.14, 0.06, 0.62], dtype=np.float32)
+        r1 = float(rng.uniform(0.25, 0.85))
+        r2 = float(rng.uniform(0.25, 0.95))
+        warm = orange * (1.0 - r1) + amber * r1
+        color = warm * (1.0 - r2) + magenta_red * r2
+        # Strength and shaping
+        mask_shaped = leak_mask ** (0.95)  # preserve core intensity
+        k = 0.28 + 0.60 * vis
+        # Screen blend: out = 1 - (1-img)*(1 - k * mask * color)
+        mask3 = self._ensure_3c(mask_shaped) * color[None, None, :]
+        add = np.clip(k * mask3, 0.0, 1.0).astype(np.float32)
+        out = 1.0 - (1.0 - img_f) * (1.0 - add)
+        out = self._clip01(out)
+        # Gentle bloom on high mask regions
+        if leak_mask.max() > 1e-6:
+            glow_mask = (cv2.GaussianBlur(leak_mask, (0, 0), sigmaX=2.8)) ** 1.1
+            glow3 = self._ensure_3c(np.clip(glow_mask, 0.0, 1.0))
+            blurred = cv2.GaussianBlur(out, (0, 0), sigmaX=2.2 + 1.8 * vis)
+            bloom_k = 0.15 + 0.25 * vis
+            out = self._clip01(out * (1.0 - bloom_k * glow3) + blurred * (bloom_k * glow3))
         return out
 
     def _apply_special_fx(self, img: np.ndarray, options: ProcessOptions) -> np.ndarray:
