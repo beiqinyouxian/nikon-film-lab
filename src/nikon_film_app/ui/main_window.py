@@ -248,40 +248,50 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(self.progress)
 
         # Params panel (scrollable)
-        form = QtWidgets.QFormLayout()
-        form.addRow("预设：", self.preset_combo)
-        form.addRow("强度：", self.strength_slider)
-        form.addRow("", self.grain_check)
-        grain_box = QtWidgets.QGroupBox("颗粒参数")
+        # Left column: basic image params
+        basic_box = QtWidgets.QGroupBox("图片基础参数")
+        basic_form = QtWidgets.QFormLayout(basic_box)
+        basic_form.addRow("预设：", self.preset_combo)
+        basic_form.addRow("强度：", self.strength_slider)
+        basic_form.addRow("暗角：", self.vignette_mode)
+        basic_form.addRow("暗角强度：", self.vignette_amount)
+        basic_form.addRow("曝光 (EV)：", self.exposure_slider)
+        basic_form.addRow("色温：", self.temp_slider)
+        basic_form.addRow("对比度：", self.contrast_slider)
+        basic_form.addRow("清晰度：", self.clarity_slider)
+        basic_form.addRow("", self.auto_check)
+        basic_form.addRow("后端：", self.backend_combo)
+
+        # Right column: grain
+        grain_box = QtWidgets.QGroupBox("颗粒调节")
         grain_form = QtWidgets.QFormLayout(grain_box)
+        grain_form.addRow("", self.grain_check)
         grain_form.addRow("类型：", self.grain_type)
         grain_form.addRow("大小：", self.grain_size)
         grain_form.addRow("密度：", self.grain_density)
         grain_form.addRow("粗糙：", self.grain_rough)
         grain_form.addRow("彩色混合：", self.grain_chroma)
-        form.addRow(grain_box)
-        form.addRow("暗角：", self.vignette_mode)
-        form.addRow("暗角强度：", self.vignette_amount)
-        form.addRow("曝光 (EV)：", self.exposure_slider)
-        form.addRow("色温：", self.temp_slider)
-        form.addRow("对比度：", self.contrast_slider)
-        form.addRow("清晰度：", self.clarity_slider)
-        form.addRow("", self.auto_check)
-        form.addRow("后端：", self.backend_combo)
+
+        cols = QtWidgets.QHBoxLayout()
+        cols.addWidget(basic_box, 1)
+        cols.addWidget(grain_box, 1)
+
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
+        btns.addStretch(1)
+
         params_outer = QtWidgets.QVBoxLayout()
-        params_outer.addLayout(form)
+        params_outer.addLayout(cols, 1)
         params_outer.addLayout(btns)
-        params_outer.addWidget(QtWidgets.QLabel("提示：拖动中间分隔条可调预览/参数栏大小；导出始终全分辨率。"))
+        params_outer.addWidget(QtWidgets.QLabel("提示：拖动粗分隔条调节预览/参数高度；导出始终全分辨率。"))
         params_widget = QtWidgets.QWidget()
         params_widget.setLayout(params_outer)
         params_scroll = QtWidgets.QScrollArea()
         params_scroll.setWidgetResizable(True)
         params_scroll.setWidget(params_widget)
-        params_scroll.setMinimumHeight(120)
+        params_scroll.setMinimumHeight(140)
 
         preview_wrap = QtWidgets.QWidget()
         preview_layout = QtWidgets.QVBoxLayout(preview_wrap)
@@ -294,18 +304,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_splitter.setChildrenCollapsible(False)
         self.right_splitter.setStretchFactor(0, 3)
         self.right_splitter.setStretchFactor(1, 1)
-        self.right_splitter.setSizes([480, 280])
+        self.right_splitter.setHandleWidth(10)  # thicker vertical drag handle
+        self.right_splitter.setSizes([520, 260])
 
         lw = QtWidgets.QWidget()
         lw.setLayout(left)
+        lw.setMinimumWidth(160)
+        lw.setMaximumWidth(360)
         self.root_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.root_splitter.addWidget(lw)
         self.root_splitter.addWidget(self.right_splitter)
         self.root_splitter.setChildrenCollapsible(False)
         self.root_splitter.setStretchFactor(0, 0)
         self.root_splitter.setStretchFactor(1, 1)
-        self.root_splitter.setSizes([280, 900])
+        self.root_splitter.setHandleWidth(6)
+        self.root_splitter.setSizes([200, 1000])  # narrower queue by default
         self.setCentralWidget(self.root_splitter)
+        self._apply_splitter_style()
         self._restore_splitters()
 
         # Signals
@@ -339,6 +354,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.progress_changed.connect(self.on_progress)
         self.thread.file_processed.connect(self.on_file_processed)
         self.thread.preview_ready.connect(self.on_preview_ready)
+
+
+    def _apply_splitter_style(self) -> None:
+        # Make the vertical (preview/params) handle easier to grab
+        self.right_splitter.setStyleSheet(
+            "QSplitter::handle:vertical {"
+            "  height: 10px;"
+            "  background: #c5c5c5;"
+            "  margin: 1px 8px;"
+            "  border-radius: 3px;"
+            "}"
+            "QSplitter::handle:vertical:hover { background: #9aa0a6; }"
+            "QSplitter::handle:horizontal {"
+            "  width: 6px;"
+            "  background: #d0d0d0;"
+            "}"
+        )
 
     def _restore_splitters(self) -> None:
         try:
