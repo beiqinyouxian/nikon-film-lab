@@ -182,6 +182,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.strength_slider.setValue(0)
         self.grain_check = QtWidgets.QCheckBox("颗粒")
         self.grain_check.setChecked(False)
+        self.grain_preset_btn = QtWidgets.QPushButton("推荐参数")
+        self.grain_preset_btn.setToolTip("应用当前颗粒类型的推荐滑条参数")
         self.grain_type = QtWidgets.QComboBox()
         self.grain_type.addItems([GrainType.SILVER_HALIDE.value, GrainType.MODERN_FINE.value, GrainType.COARSE_PUSH.value])
         self.grain_size = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -281,7 +283,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Right column: grain
         grain_box = QtWidgets.QGroupBox("颗粒调节")
         grain_form = QtWidgets.QFormLayout(grain_box)
-        grain_form.addRow("", self.grain_check)
+        grain_top = QtWidgets.QHBoxLayout()
+        grain_top.addWidget(self.grain_check)
+        grain_top.addWidget(self.grain_preset_btn)
+        grain_top.addStretch(1)
+        grain_form.addRow(grain_top)
         grain_form.addRow("类型：", self.grain_type)
         grain_form.addRow("大小：", self.grain_size)
         grain_form.addRow("密度：", self.grain_density)
@@ -351,8 +357,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cancel_btn.clicked.connect(self.on_cancel)
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
         self.strength_slider.valueChanged.connect(self.on_strength_changed)
-        self.grain_check.toggled.connect(self.on_flags_changed)
-        self.grain_type.currentTextChanged.connect(self.on_grain_params_changed)
+        self.grain_check.toggled.connect(self.on_grain_enabled_changed)
+        self.grain_preset_btn.clicked.connect(self.on_grain_preset_clicked)
+        self.grain_type.currentTextChanged.connect(self.on_grain_type_changed)
         self.grain_size.valueChanged.connect(self.on_grain_params_changed)
         self.grain_density.valueChanged.connect(self.on_grain_params_changed)
         self.grain_rough.valueChanged.connect(self.on_grain_params_changed)
@@ -548,6 +555,51 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "预览错误", f"加载失败：{os.path.basename(path)}\n{e}")
             self.preview_label.setText("加载失败")
+        self._request_preview_update()
+
+    # Recommended "best look" defaults per grain type (user can still tweak)
+    GRAIN_PRESETS = {
+        "Silver halide": {"size": 40, "density": 48, "rough": 58, "chroma": 8},
+        "Modern fine": {"size": 18, "density": 32, "rough": 22, "chroma": 4},
+        "Coarse push": {"size": 62, "density": 60, "rough": 72, "chroma": 18},
+    }
+
+    def _apply_grain_preset(self, grain_name: str | None = None) -> None:
+        name = grain_name or self.grain_type.currentText()
+        preset = self.GRAIN_PRESETS.get(name)
+        if not preset:
+            return
+        for w, key in (
+            (self.grain_size, "size"),
+            (self.grain_density, "density"),
+            (self.grain_rough, "rough"),
+            (self.grain_chroma, "chroma"),
+        ):
+            w.blockSignals(True)
+            w.setValue(int(preset[key]))
+            w.blockSignals(False)
+        self.thread.options.grain_type = GrainType(name)
+        self.thread.options.grain_size = int(preset["size"])
+        self.thread.options.grain_density = int(preset["density"])
+        self.thread.options.grain_roughness = int(preset["rough"])
+        self.thread.options.grain_chroma_mix = int(preset["chroma"])
+
+    def on_grain_preset_clicked(self) -> None:
+        self._apply_grain_preset()
+        if not self.grain_check.isChecked():
+            self.grain_check.setChecked(True)
+        else:
+            self._request_preview_update()
+
+    def on_grain_enabled_changed(self, checked: bool) -> None:
+        self.thread.options.enable_grain = bool(checked)
+        if checked:
+            self._apply_grain_preset()
+        self._request_preview_update()
+
+    def on_grain_type_changed(self, name: str) -> None:
+        self.thread.options.grain_type = GrainType(name)
+        self._apply_grain_preset(name)
         self._request_preview_update()
 
     def on_grain_params_changed(self) -> None:
