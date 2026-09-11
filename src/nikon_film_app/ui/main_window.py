@@ -870,8 +870,8 @@ class MainWindow(QtWidgets.QMainWindow):
         no_contrast = (getattr(self.thread.options, "contrast", 0) == 0)
         no_special = (not getattr(self.thread.options, "enable_lens_aging", False)) and \
                      (not getattr(self.thread.options, "enable_scratches", False)) and \
-                     (not getattr(self.thread.options, "enable_expired_film", getattr(self.thread.options, \"enable_film_defects\", False))) and \
-                     (not getattr(self.thread.options, "enable_light_leak", getattr(self.thread.options, \"enable_partial_exposure\", False)))
+                     (not getattr(self.thread.options, "enable_expired_film", getattr(self.thread.options, "enable_film_defects", False))) and \
+                     (not getattr(self.thread.options, "enable_light_leak", getattr(self.thread.options, "enable_partial_exposure", False)))
         no_hi = (getattr(self.thread.options, "highlights", 0) == 0)
         no_sh = (getattr(self.thread.options, "shadows", 0) == 0)
         no_vib = (getattr(self.thread.options, "vibrance", 0) == 0)
