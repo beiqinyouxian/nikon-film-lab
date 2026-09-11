@@ -199,6 +199,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.backend_combo.addItems([BackendMode.AUTO.value, BackendMode.CPU.value, BackendMode.OPENCL.value])
 
         self.progress = QtWidgets.QProgressBar()
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%p%")
+        self._progress_style_busy = (
+            "QProgressBar { text-align: center; } "
+            "QProgressBar::chunk { background-color: #3b82f6; }"
+        )
+        self._progress_style_done = (
+            "QProgressBar { text-align: center; } "
+            "QProgressBar::chunk { background-color: #22c55e; }"
+        )
+        self.progress.setStyleSheet(self._progress_style_busy)
 
         left = QtWidgets.QVBoxLayout()
         left.addWidget(QtWidgets.QLabel("队列（拖放 .nef/.jpg）："))
@@ -369,6 +380,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.cancelled = False
         self.process_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.progress.setStyleSheet(self._progress_style_busy)
+        self.progress.setFormat("%p%")
+        self.progress.setValue(0)
         self.thread.start()
 
     def on_cancel(self) -> None:
@@ -529,11 +543,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.grain_seed = zlib.adler32(path.encode("utf-8")) & 0xFFFFFFFF
 
     def on_progress(self, cur: int, total: int) -> None:
-        self.progress.setMaximum(total)
+        self.progress.setMaximum(max(total, 1))
         self.progress.setValue(cur)
-        if cur == total:
+        if total > 0 and cur >= total:
+            self.progress.setStyleSheet(self._progress_style_done)
+            self.progress.setFormat("%p%  ✓")
             self.process_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
+        else:
+            self.progress.setStyleSheet(self._progress_style_busy)
+            self.progress.setFormat("%p%")
 
     def on_file_processed(self, path: str, success: bool, message: str) -> None:
         if not success:
