@@ -278,6 +278,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.file_processed.connect(self.on_file_processed)
         self.thread.preview_ready.connect(self.on_preview_ready)
 
+    def _restore_splitters(self) -> None:
+        try:
+            settings = QtCore.QSettings("nikon-film-lab", "nikon-film-lab")
+            rs = settings.value("right_splitter_state", None)
+            if isinstance(rs, QtCore.QByteArray):
+                self.right_splitter.restoreState(rs)
+            elif isinstance(rs, bytes):
+                self.right_splitter.restoreState(QtCore.QByteArray(rs))
+            rts = settings.value("root_splitter_state", None)
+            if isinstance(rts, QtCore.QByteArray):
+                self.root_splitter.restoreState(rts)
+            elif isinstance(rts, bytes):
+                self.root_splitter.restoreState(QtCore.QByteArray(rts))
+        except Exception:
+            pass
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        try:
+            settings = QtCore.QSettings("nikon-film-lab", "nikon-film-lab")
+            settings.setValue("right_splitter_state", self.right_splitter.saveState())
+            settings.setValue("root_splitter_state", self.root_splitter.saveState())
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def on_files_dropped(self, paths: List[str]) -> None:
         self._add_paths(paths)
         self._request_preview_update()
