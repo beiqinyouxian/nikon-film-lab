@@ -65,6 +65,10 @@ class ProcessorThread(QtCore.QThread):
             temp_bias=0,
             clarity=0,
             contrast=0,
+            highlights=0,
+            shadows=0,
+            vibrance=0,
+            saturation=0,
         )
         self.export_dir = os.getcwd()
         self.backend = BackendMode.AUTO
@@ -213,6 +217,14 @@ class MainWindow(QtWidgets.QMainWindow):
         _bipolar(self.clarity_slider, -100, 100)  # softer .. clearer, center 0
         self.contrast_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         _bipolar(self.contrast_slider, -100, 100)  # flatter .. punchier, center 0
+        self.highlights_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        _bipolar(self.highlights_slider, -100, 100)
+        self.shadows_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        _bipolar(self.shadows_slider, -100, 100)
+        self.vibrance_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        _bipolar(self.vibrance_slider, -100, 100)
+        self.saturation_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        _bipolar(self.saturation_slider, -100, 100)
         self.auto_check = QtWidgets.QCheckBox("自动基线（曝光/色温）")
         self.auto_check.setChecked(False)
 
@@ -258,6 +270,10 @@ class MainWindow(QtWidgets.QMainWindow):
         basic_form.addRow("曝光 (EV)：", self.exposure_slider)
         basic_form.addRow("色温：", self.temp_slider)
         basic_form.addRow("对比度：", self.contrast_slider)
+        basic_form.addRow("高光：", self.highlights_slider)
+        basic_form.addRow("阴影：", self.shadows_slider)
+        basic_form.addRow("鲜艳度：", self.vibrance_slider)
+        basic_form.addRow("饱和度：", self.saturation_slider)
         basic_form.addRow("清晰度：", self.clarity_slider)
         basic_form.addRow("", self.auto_check)
         basic_form.addRow("后端：", self.backend_combo)
@@ -347,6 +363,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.clarity_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.contrast_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.highlights_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.shadows_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.vibrance_slider.valueChanged.connect(self.on_manual_adjust_changed)
+        self.saturation_slider.valueChanged.connect(self.on_manual_adjust_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
         self.reset_btn.clicked.connect(self.on_reset)
@@ -502,6 +522,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.temp_bias = self.temp_slider.value()
         self.thread.options.clarity = self.clarity_slider.value()
         self.thread.options.contrast = self.contrast_slider.value()
+        self.thread.options.highlights = self.highlights_slider.value()
+        self.thread.options.shadows = self.shadows_slider.value()
+        self.thread.options.vibrance = self.vibrance_slider.value()
+        self.thread.options.saturation = self.saturation_slider.value()
         self._request_preview_update()
 
     def on_backend_changed(self, text: str) -> None:
@@ -617,7 +641,11 @@ class MainWindow(QtWidgets.QMainWindow):
         no_temp = (getattr(self.thread.options, "temp_bias", 0) == 0)
         no_clarity = (getattr(self.thread.options, "clarity", 0) == 0)
         no_contrast = (getattr(self.thread.options, "contrast", 0) == 0)
-        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast
+        no_hi = (getattr(self.thread.options, "highlights", 0) == 0)
+        no_sh = (getattr(self.thread.options, "shadows", 0) == 0)
+        no_vib = (getattr(self.thread.options, "vibrance", 0) == 0)
+        no_sat = (getattr(self.thread.options, "saturation", 0) == 0)
+        no_fx = (not self.thread.options.enable_grain) and no_vignette and (not self.thread.options.enable_auto_baseline) and no_exposure and no_temp and no_clarity and no_contrast and no_hi and no_sh and no_vib and no_sat
         return not (no_preset and no_strength and no_fx)
 
     def _show_preview(self, bgr: np.ndarray) -> None:
@@ -676,6 +704,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.setValue(0)
         self.clarity_slider.setValue(0)
         self.contrast_slider.setValue(0)
+        self.highlights_slider.setValue(0)
+        self.shadows_slider.setValue(0)
+        self.vibrance_slider.setValue(0)
+        self.saturation_slider.setValue(0)
         self.auto_check.setChecked(False)
         self.grain_size.setValue(0)
         self.grain_density.setValue(0)
@@ -697,6 +729,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.temp_bias = 0
         self.thread.options.clarity = 0
         self.thread.options.contrast = 0
+        self.thread.options.highlights = 0
+        self.thread.options.shadows = 0
+        self.thread.options.vibrance = 0
+        self.thread.options.saturation = 0
         self.thread.options.preset_name = "不处理"
         self._request_preview_update()
 
