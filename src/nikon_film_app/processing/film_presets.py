@@ -39,6 +39,58 @@ def _apply_color_matrix(img: np.ndarray, matrix: np.ndarray) -> np.ndarray:
     return _clip01(bgr)
 
 
+def _luminance_bgr(img: np.ndarray) -> np.ndarray:
+    # Return luminance (0..1) from BGR
+    b, g, r = cv2.split(img)
+    return 0.0722 * r + 0.7152 * g + 0.2126 * b  # using swapped due to BGR vs RGB; still fine as relative mix
+
+
+def _highlight_rolloff(img: np.ndarray, amount: float) -> np.ndarray:
+    if amount <= 0.0:
+        return img
+    x = img
+    t = 0.7
+    low = np.minimum(x, t)
+    high = np.maximum(0.0, x - t) / (1.0 - t)
+    # compress top with a smooth shoulder
+    compressed = 1.0 - np.power(1.0 - high, 1.0 + 2.5 * amount)
+    y = low + (1.0 - t) * compressed
+    return _clip01(y)
+
+
+def _shadow_lift(img: np.ndarray, amount: float) -> np.ndarray:
+    if amount <= 0.0:
+        return img
+    l = _luminance_bgr(img)
+    weight = 1.0 - l  # stronger in shadows
+    lift = amount * 0.15
+    return _clip01(img + lift * weight[..., None])
+
+
+def _split_tone(img: np.ndarray, shadow_tint_bgr: Tuple[float, float, float], highlight_tint_bgr: Tuple[float, float, float],
+                shadow_amt: float, highlight_amt: float) -> np.ndarray:
+    if shadow_amt <= 0.0 and highlight_amt <= 0.0:
+        return img
+    l = _luminance_bgr(img)
+    st = np.array(shadow_tint_bgr, dtype=np.float32)[None, None, :]
+    ht = np.array(highlight_tint_bgr, dtype=np.float32)[None, None, :]
+    shadow_w = (1.0 - l)[..., None]
+    highlight_w = l[..., None]
+    out = img + shadow_amt * st * shadow_w + highlight_amt * ht * highlight_w
+    return _clip01(out)
+
+
+def _microcontrast(img: np.ndarray, amount: float, radius: float = 1.6) -> np.ndarray:
+    if amount <= 0.0:
+        return img
+    # Unsharp mask style
+    sigma = max(0.1, radius)
+    blur = cv2.GaussianBlur(img, (0, 0), sigmaX=sigma)
+    detail = img - blur
+    out = img + amount * detail
+    return _clip01(out)
+
+
 def _adjust_contrast(img: np.ndarray, contrast: float) -> np.ndarray:
     # contrast >0 increases contrast around mid-gray 0.5
     return _clip01((img - 0.5) * (1.0 + contrast) + 0.5)
@@ -199,8 +251,24 @@ class FilmPreset:
     process: ProcessFunc
 
 
-def _build_preset(name: str, curve_params: Tuple[float, float, float], color_matrix: np.ndarray,
-                  contrast: float, saturation: float, default_vignette: float) -> FilmPreset:
+def _build_preset(
+    name: str,
+    curve_params: Tuple[float, float, float],
+    color_matrix: np.ndarray,
+    contrast: float,
+    saturation: float,
+    default_vignette: float,
+    *,
+    rolloff: float = 0.0,
+    shadow_lift_amt: float = 0.0,
+    split_shadow_bgr: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    split_high_bgr: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    split_shadow_amt: float = 0.0,
+    split_high_amt: float = 0.0,
+    microcontrast_amt: float = 0.0,
+    monochrome: bool = False,
+    halation: float = 0.0,
+) -> FilmPreset:
     curve = _make_curve(*curve_params)
 
     def proc(img: np.ndarray, accel: Accelerator, strength01: float, grain: GrainParams, enable_vignette: bool, auto_base: bool, grain_seed: Optional[int]) -> np.ndarray:
@@ -208,9 +276,27 @@ def _build_preset(name: str, curve_params: Tuple[float, float, float], color_mat
         if auto_base:
             work = _auto_baseline(work)
         work = _apply_tone_curve(work, curve)
+        work = _highlight_rolloff(work, rolloff)
         work = _apply_color_matrix(work, color_matrix)
         work = _adjust_contrast(work, contrast)
         work = _adjust_saturation(work, saturation)
+        if shadow_lift_amt > 0.0:
+            work = _shadow_lift(work, shadow_lift_amt)
+        if split_shadow_amt > 0.0 or split_high_amt > 0.0:
+            work = _split_tone(work, split_shadow_bgr, split_high_bgr, split_shadow_amt, split_high_amt)
+        if microcontrast_amt > 0.0:
+            work = _microcontrast(work, microcontrast_amt)
+        if monochrome:
+            l = _luminance_bgr(work)
+            work = np.dstack([l, l, l]).astype(np.float32)
+        if halation > 0.0:
+            # simple bloom on highlights with warm tint
+            v = _luminance_bgr(work)
+            mask = np.clip((v - 0.7) / 0.3, 0.0, 1.0)
+            glow_src = cv2.GaussianBlur(work, (0, 0), sigmaX=3.0)
+            warm = np.array([0.02, 0.03, 0.0], dtype=np.float32)  # slight warm glow
+            glow = glow_src + warm
+            work = _clip01(work + halation * mask[..., None] * (glow - work))
         if enable_vignette:
             work = _vignette(work, default_vignette)
         if grain.seed is None:
@@ -228,18 +314,150 @@ def get_presets() -> Dict[str, FilmPreset]:
         return np.array([rg, gg, bg], dtype=np.float32)
 
     presets = [
-        _build_preset("Kodak Portra 400", (0.02, 0.55, 0.98), mat((1.05, 0.02, -0.02), (0.00, 1.02, -0.01), (-0.01, 0.02, 0.98)), 0.08, -0.05, 0.25),
-        _build_preset("Kodak Gold 200", (0.01, 0.52, 0.99), mat((1.10, -0.02, -0.02), (0.00, 1.00, 0.00), (-0.02, 0.02, 0.95)), 0.10, 0.05, 0.20),
-        _build_preset("Fuji Velvia 50", (0.00, 0.50, 1.00), mat((1.08, 0.02, -0.05), (-0.02, 1.05, -0.02), (-0.02, -0.02, 1.05)), 0.12, 0.25, 0.15),
-        _build_preset("Fuji Pro 400H", (0.02, 0.54, 0.98), mat((1.02, 0.00, -0.01), (0.00, 1.02, -0.02), (-0.02, 0.02, 1.00)), 0.06, -0.02, 0.20),
-        _build_preset("Ilford HP5 (B&W)", (0.03, 0.52, 0.97), mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)), 0.15, -1.0, 0.25),
-        _build_preset("Cinestill 800T", (0.00, 0.48, 0.98), mat((0.95, 0.05, 0.10), (0.00, 1.00, 0.05), (-0.05, 0.00, 1.05)), 0.10, 0.05, 0.25),
-        _build_preset("Agfa Vista", (0.02, 0.53, 0.99), mat((1.06, -0.01, -0.02), (0.00, 1.01, -0.01), (-0.01, 0.00, 0.98)), 0.09, 0.08, 0.18),
-        _build_preset("Kodak Tri-X", (0.02, 0.50, 0.96), mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)), 0.20, -1.0, 0.30),
+        # Kodak family
+        _build_preset(
+            "Kodak Portra 400",
+            (0.03, 0.57, 0.98),
+            mat((1.07, 0.02, -0.02), (0.00, 1.03, -0.02), (-0.02, 0.03, 0.98)),
+            contrast=0.10,
+            saturation=-0.03,
+            default_vignette=0.20,
+            rolloff=0.25,
+            split_shadow_bgr=(0.02, 0.03, 0.00),  # slight cyan/green in shadows (BGR)
+            split_high_bgr=(0.00, 0.01, 0.02),    # warm highlights
+            split_shadow_amt=0.05,
+            split_high_amt=0.04,
+            microcontrast_amt=0.06,
+        ),
+        _build_preset(
+            "Kodak Gold 200",
+            (0.02, 0.54, 0.99),
+            mat((1.12, -0.02, -0.02), (0.00, 1.00, 0.00), (-0.02, 0.02, 0.94)),
+            contrast=0.12,
+            saturation=0.10,
+            default_vignette=0.18,
+            rolloff=0.18,
+            split_shadow_bgr=(0.00, 0.01, 0.00),
+            split_high_bgr=(0.00, 0.02, 0.04),
+            split_high_amt=0.05,
+            microcontrast_amt=0.04,
+        ),
+        # Fuji
+        _build_preset(
+            "Fuji Velvia 50",
+            (0.00, 0.48, 1.00),
+            mat((1.10, 0.02, -0.06), (-0.02, 1.07, -0.02), (-0.02, -0.02, 1.08)),
+            contrast=0.18,
+            saturation=0.35,
+            default_vignette=0.15,
+            rolloff=0.10,
+            split_shadow_bgr=(0.02, 0.01, 0.00),
+            split_high_bgr=(0.00, 0.01, 0.02),
+            split_shadow_amt=0.03,
+            split_high_amt=0.03,
+            microcontrast_amt=0.08,
+        ),
+        _build_preset(
+            "Fuji Pro 400H",
+            (0.02, 0.56, 0.99),
+            mat((1.02, -0.01, -0.01), (-0.01, 1.03, -0.02), (-0.02, 0.02, 1.00)),
+            contrast=0.02,
+            saturation=-0.08,
+            default_vignette=0.18,
+            rolloff=0.22,
+            shadow_lift_amt=0.10,
+            split_shadow_bgr=(0.03, 0.05, 0.00),
+            split_high_bgr=(0.00, 0.01, 0.01),
+            split_shadow_amt=0.06,
+            split_high_amt=0.02,
+            microcontrast_amt=0.03,
+        ),
+        # B&W
+        _build_preset(
+            "Ilford HP5 (B&W)",
+            (0.04, 0.54, 0.97),
+            mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)),
+            contrast=0.22,
+            saturation=-1.0,
+            default_vignette=0.22,
+            rolloff=0.12,
+            microcontrast_amt=0.10,
+            monochrome=True,
+        ),
+        _build_preset(
+            "Kodak Tri-X",
+            (0.03, 0.50, 0.95),
+            mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)),
+            contrast=0.30,
+            saturation=-1.0,
+            default_vignette=0.28,
+            rolloff=0.10,
+            microcontrast_amt=0.14,
+            monochrome=True,
+        ),
+        # Cinestill
+        _build_preset(
+            "Cinestill 800T",
+            (0.00, 0.50, 0.98),
+            mat((0.95, 0.05, 0.10), (0.00, 1.00, 0.06), (-0.04, 0.00, 1.06)),
+            contrast=0.12,
+            saturation=0.08,
+            default_vignette=0.25,
+            rolloff=0.20,
+            split_shadow_bgr=(0.08, 0.04, 0.00),   # teal shadows (B channel up)
+            split_high_bgr=(0.00, 0.02, 0.06),     # warm highlights
+            split_shadow_amt=0.08,
+            split_high_amt=0.06,
+            microcontrast_amt=0.06,
+            halation=0.12,
+        ),
+        # Agfa
+        _build_preset(
+            "Agfa Vista",
+            (0.02, 0.54, 0.99),
+            mat((1.06, -0.01, -0.03), (-0.01, 1.02, -0.01), (-0.01, -0.01, 0.99)),
+            contrast=0.10,
+            saturation=0.06,
+            default_vignette=0.18,
+            rolloff=0.14,
+            split_shadow_bgr=(0.02, 0.01, 0.00),
+            split_high_bgr=(0.00, 0.01, 0.01),
+            split_shadow_amt=0.03,
+            split_high_amt=0.02,
+            microcontrast_amt=0.05,
+        ),
         # Leica-inspired
-        _build_preset("Leica Color Modern", (0.02, 0.53, 0.99), mat((1.04, 0.02, -0.01), (0.00, 1.02, -0.01), (-0.01, 0.01, 0.99)), 0.10, -0.02, 0.12),
-        _build_preset("Leica Classic Mono", (0.01, 0.50, 0.95), mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)), 0.22, -1.0, 0.20),
-        _build_preset("Leica Chrome Vivid", (0.00, 0.48, 0.98), mat((1.06, 0.00, -0.04), (-0.01, 1.04, -0.01), (-0.01, -0.01, 1.03)), 0.12, 0.18, 0.15),
+        _build_preset(
+            "Leica Color Modern",
+            (0.02, 0.54, 0.99),
+            mat((1.05, 0.02, -0.01), (0.00, 1.03, -0.01), (-0.01, 0.01, 0.99)),
+            contrast=0.14,
+            saturation=0.02,
+            default_vignette=0.12,
+            rolloff=0.12,
+            microcontrast_amt=0.16,
+        ),
+        _build_preset(
+            "Leica Classic Mono",
+            (0.02, 0.50, 0.95),
+            mat((0.33, 0.33, 0.33), (0.33, 0.33, 0.33), (0.33, 0.33, 0.33)),
+            contrast=0.28,
+            saturation=-1.0,
+            default_vignette=0.20,
+            rolloff=0.10,
+            microcontrast_amt=0.18,
+            monochrome=True,
+        ),
+        _build_preset(
+            "Leica Chrome Vivid",
+            (0.00, 0.50, 0.99),
+            mat((1.08, 0.00, -0.04), (-0.01, 1.05, -0.01), (-0.01, -0.01, 1.04)),
+            contrast=0.16,
+            saturation=0.16,
+            default_vignette=0.15,
+            rolloff=0.10,
+            microcontrast_amt=0.20,
+        ),
     ]
     return {p.name: p for p in presets}
 
