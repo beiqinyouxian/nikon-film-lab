@@ -714,19 +714,29 @@ class MainWindow(QtWidgets.QMainWindow):
         rec = self.thread.processor.recommended_strength(name)
         self._animate_slider_to(self.strength_slider, int(rec))
     
+    def _safe_stop_anim(self, anim: Optional[QtCore.QVariantAnimation]) -> None:
+        if anim is None:
+            return
+        try:
+            from shiboken6 import isValid
+            if not isValid(anim):
+                return
+            anim.stop()
+        except RuntimeError:
+            pass
+
     def _animate_slider_to(self, slider: QtWidgets.QSlider, target: int, duration_ms: int = 180) -> None:
         # 仅用于程序触发的跳变；用户拖动不干预
-        anim = self._slider_anims.get(slider)
-        if anim is not None:
-            anim.stop()
+        # KeepWhenStopped：避免 DeleteWhenStopped 后 Python 引用变成悬空 C++ 对象
+        self._safe_stop_anim(self._slider_anims.get(slider))
         anim = QtCore.QVariantAnimation(self)
         anim.setStartValue(int(slider.value()))
         anim.setEndValue(int(target))
         anim.setDuration(duration_ms)
         anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
-        anim.valueChanged.connect(lambda v: slider.setValue(int(v)))
+        anim.valueChanged.connect(lambda v, s=slider: s.setValue(int(v)))
         self._slider_anims[slider] = anim
-        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
 
     def on_flags_changed(self) -> None:
         self.thread.options.enable_grain = self.grain_check.isChecked()
@@ -961,8 +971,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 非线性动画到目标进度
         start_val = self.progress.value()
         end_val = cur
-        if self._progress_anim is not None:
-            self._progress_anim.stop()
+        self._safe_stop_anim(self._progress_anim)
         self._progress_anim = QtCore.QVariantAnimation(self)
         self._progress_anim.setStartValue(start_val)
         self._progress_anim.setEndValue(end_val)
@@ -971,7 +980,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress_anim.setDuration(dur)
         self._progress_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
         self._progress_anim.valueChanged.connect(lambda v: self.progress.setValue(int(v)))
-        self._progress_anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._progress_anim.start(QtCore.QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
         pct = int(round(100.0 * cur / total)) if total else 0
         if cur >= total:
             self.progress.setStyleSheet(self._progress_style_done)
