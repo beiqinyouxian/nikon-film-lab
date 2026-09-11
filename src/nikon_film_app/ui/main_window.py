@@ -267,6 +267,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._progress_style_busy = "QProgressBar::chunk { background-color: #3b82f6; }"
         self._progress_style_done = "QProgressBar::chunk { background-color: #22c55e; }"
         self.progress.setStyleSheet(self._progress_style_busy)
+        self._progress_anim: Optional[QtCore.QVariantAnimation] = None
+        self._slider_anims: Dict[QtWidgets.QSlider, QtCore.QVariantAnimation] = {}
 
         left = QtWidgets.QVBoxLayout()
         left.addWidget(QtWidgets.QLabel("队列（拖放 .nef/.jpg）："))
@@ -688,9 +690,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.options.preset_name = name
         # 自动应用预设推荐强度（不影响手动曝光等）
         rec = self.thread.processor.recommended_strength(name)
-        self.strength_slider.blockSignals(True)
-        self.strength_slider.setValue(int(rec))
-        self.strength_slider.blockSignals(False)
+        self._animate_slider_to(self.strength_slider, int(rec))
         self.thread.options.strength_percent = int(rec)
         self._request_preview_update()
 
@@ -701,7 +701,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_strength_recommended_clicked(self) -> None:
         name = self.preset_combo.currentText()
         rec = self.thread.processor.recommended_strength(name)
-        self.strength_slider.setValue(int(rec))
+        self._animate_slider_to(self.strength_slider, int(rec))
+    
+    def _animate_slider_to(self, slider: QtWidgets.QSlider, target: int, duration_ms: int = 180) -> None:
+        # 仅用于程序触发的跳变；用户拖动不干预
+        anim = self._slider_anims.get(slider)
+        if anim is not None:
+            anim.stop()
+        anim = QtCore.QVariantAnimation(self)
+        anim.setStartValue(int(slider.value()))
+        anim.setEndValue(int(target))
+        anim.setDuration(duration_ms)
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
+        anim.valueChanged.connect(lambda v: slider.setValue(int(v)))
+        self._slider_anims[slider] = anim
+        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def on_flags_changed(self) -> None:
         self.thread.options.enable_grain = self.grain_check.isChecked()
@@ -933,7 +947,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_progress(self, cur: int, total: int) -> None:
         total = max(total, 1)
         self.progress.setMaximum(total)
-        self.progress.setValue(cur)
+        # 非线性动画到目标进度
+        start_val = self.progress.value()
+        end_val = cur
+        if self._progress_anim is not None:
+            self._progress_anim.stop()
+        self._progress_anim = QtCore.QVariantAnimation(self)
+        self._progress_anim.setStartValue(start_val)
+        self._progress_anim.setEndValue(end_val)
+        delta = abs(end_val - start_val)
+        dur = int(min(450, max(120, 12 * delta)))
+        self._progress_anim.setDuration(dur)
+        self._progress_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutCubic)
+        self._progress_anim.valueChanged.connect(lambda v: self.progress.setValue(int(v)))
+        self._progress_anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
         pct = int(round(100.0 * cur / total)) if total else 0
         if cur >= total:
             self.progress.setStyleSheet(self._progress_style_done)
