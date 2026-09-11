@@ -153,6 +153,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_btn = QtWidgets.QPushButton("开始处理")
         self.cancel_btn = QtWidgets.QPushButton("取消")
         self.cancel_btn.setEnabled(False)
+        self.reset_btn = QtWidgets.QPushButton("复位")
 
         self.export_edit = QtWidgets.QLineEdit(os.getcwd())
         self.export_btn = QtWidgets.QPushButton("选择导出文件夹")
@@ -227,6 +228,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
+        btns.addWidget(self.reset_btn)
         right.addLayout(btns)
         right.addWidget(QtWidgets.QLabel("提示：导出始终为原始全分辨率，预览仅为缩放显示。"))
 
@@ -248,6 +250,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_btn.clicked.connect(self.on_pick_export)
         self.list_widget.files_dropped.connect(self.on_files_dropped)
         self.list_widget.itemSelectionChanged.connect(self.on_selection_changed)
+        self.list_widget.itemClicked.connect(self.on_selection_changed)
         self.process_btn.clicked.connect(self.on_process)
         self.cancel_btn.clicked.connect(self.on_cancel)
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
@@ -261,6 +264,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vignette_check.toggled.connect(self.on_flags_changed)
         self.auto_check.toggled.connect(self.on_flags_changed)
         self.backend_combo.currentTextChanged.connect(self.on_backend_changed)
+        self.reset_btn.clicked.connect(self.on_reset)
 
         self.thread.progress_changed.connect(self.on_progress)
         self.thread.file_processed.connect(self.on_file_processed)
@@ -360,6 +364,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._request_preview_update()
 
     def on_selection_changed(self) -> None:
+        # Show original immediately, then schedule processed preview
+        if self.list_widget.count() == 0:
+            return
+        idx = self.list_widget.currentRow()
+        if idx < 0:
+            idx = 0
+        path = self.list_widget.item(idx).text()
+        try:
+            before_bgr = self._load_preview_source(path)
+            self._current_before_bgr = before_bgr
+            self._set_label_image_fit(self.before_label, before_bgr)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "预览错误", f"加载失败：{os.path.basename(path)}\n{e}")
+            self.before_label.setText("加载失败")
         self._request_preview_update()
 
     def on_grain_params_changed(self) -> None:
@@ -405,8 +423,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if local_seq != self._preview_seq:
                 return
             self._show_previews(before_bgr, after_bgr)
-        except Exception:
-            pass
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "预览错误", f"处理失败：{os.path.basename(path)}\n{e}")
+            self.after_label.setText("处理失败")
 
     def _downscale_max_side(self, bgr: np.ndarray, max_side: int) -> np.ndarray:
         h, w = bgr.shape[:2]
@@ -477,6 +496,30 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "错误", f"{os.path.basename(path)} 处理失败：{message}")
 
     def on_preview_ready(self, before: np.ndarray, after: np.ndarray) -> None:
-        self.before_label.setPixmap(bgr_to_qpixmap(before))
-        self.after_label.setPixmap(bgr_to_qpixmap(after))
+        # Use fit-to-view scaling, not fixed-size pixmap
+        self._current_before_bgr = before
+        self._current_after_bgr = after
+        self._refit_previews()
+
+    # Reset controls to show original image
+    def on_reset(self) -> None:
+        # Reset UI controls to neutral
+        self.strength_slider.setValue(0)
+        self.grain_check.setChecked(False)
+        self.vignette_check.setChecked(False)
+        self.auto_check.setChecked(False)
+        self.grain_size.setValue(0)
+        self.grain_density.setValue(0)
+        self.grain_rough.setValue(0)
+        self.grain_chroma.setValue(0)
+        # Update options directly
+        self.thread.options.strength_percent = 0
+        self.thread.options.enable_grain = False
+        self.thread.options.enable_vignette = False
+        self.thread.options.enable_auto_baseline = False
+        self.thread.options.grain_size = 0
+        self.thread.options.grain_density = 0
+        self.thread.options.grain_roughness = 0
+        self.thread.options.grain_chroma_mix = 0
+        self._request_preview_update()
 
