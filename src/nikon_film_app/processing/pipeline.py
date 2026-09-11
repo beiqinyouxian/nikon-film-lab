@@ -215,43 +215,136 @@ class ImageProcessor:
         return self._clip01(mixed)
 
     def _scratches(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
+        # Realistic thin anti-aliased hairline scratches:
+        # - predominantly faint dark grooves
+        # - specular highlights only as thin companions gated by image highlights
+        # - micro-wobble and clustered parallels
+        # - edge-biased occurrence
+        # - soft local haze along the scratch path only
         if t <= 1e-6:
             return img
         h, w = img.shape[:2]
         rng = np.random.default_rng(seed if seed is not None else 0)
-        overlay = img.copy()
-        alpha = np.zeros((h, w, 1), dtype=np.float32)
-        # Number of scratches scales with area and t but capped
-        base_count = int(2 + 6 * t)
-        area_scale = max(1.0, np.sqrt(h * w) / 1000.0)
-        count = int(min(60, base_count * area_scale))
-        for i in range(count):
-            # Random line endpoints slightly beyond frame to span across
-            x0 = int(rng.integers(-w//4, w + w//4))
-            y0 = int(rng.integers(-h//4, h + h//4))
-            angle = float(rng.uniform(0, np.pi))
-            length = int(rng.uniform(0.3, 1.2) * max(h, w))
-            x1 = int(x0 + length * np.cos(angle))
-            y1 = int(y0 - length * np.sin(angle))
-            thickness = int(rng.integers(1, 3))
-            bright = rng.random() < 0.5
-            color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
-            # Draw on overlay with small opacity
-            cv2.line(overlay, (x0, y0), (x1, y1), color, thickness=thickness, lineType=cv2.LINE_AA)
-            cv2.line(alpha, (x0, y0), (x1, y1), (0.15 + 0.25 * t,), thickness=thickness, lineType=cv2.LINE_AA)
-        # Occasional hairline arcs
-        for i in range(max(0, int(1 * t))):
-            center = (int(rng.integers(-w//2, w + w//2)), int(rng.integers(-h//2, h + h//2)))
-            axes = (int(rng.uniform(0.6, 1.2) * w), int(rng.uniform(0.6, 1.2) * h))
-            start_angle = int(rng.uniform(0, 360))
-            end_angle = start_angle + int(rng.uniform(20, 120))
-            thickness = 1
-            bright = rng.random() < 0.5
-            color = (1.0, 1.0, 1.0) if bright else (0.0, 0.0, 0.0)
-            cv2.ellipse(overlay, center, axes, 0, start_angle, end_angle, color, thickness=thickness, lineType=cv2.LINE_AA)
-            cv2.ellipse(alpha, center, axes, 0, start_angle, end_angle, (0.10 + 0.20 * t,), thickness=thickness, lineType=cv2.LINE_AA)
-        alpha3 = self._ensure_3c(alpha)
-        out = self._clip01(img * (1.0 - alpha3) + overlay * alpha3)
+        img_f = img.astype(np.float32)
+        # Nonlinear visibility so 30–50% is clearly visible but natural
+        vis = float(np.clip(0.08 + (t ** 0.62) * 0.92, 0.0, 1.0))
+        # Highlight gate (strong specular only where base image is bright)
+        b, g, r = cv2.split(img_f)
+        luma = (0.114 * b + 0.587 * g + 0.299 * r).astype(np.float32)
+        gate = np.clip((luma - 0.58) / 0.25, 0.0, 1.0)  # 0 below ~0.58, 1 above ~0.83
+        gate = gate * gate  # tighten
+        # Masks (HxW)
+        dark_mask = np.zeros((h, w), dtype=np.float32)
+        bright_mask = np.zeros((h, w), dtype=np.float32)
+        haze_mask = np.zeros((h, w), dtype=np.float32)
+        # Edge bias via inverse radial mask
+        edge_bias = (1.0 - self._radial_mask(h, w))  # 0 center, 1 edges
+        area_scale = max(1.0, np.sqrt(h * w) / 900.0)
+        n_clusters = int(min(90, (6 + 16 * vis) * area_scale))
+        # Helper to draw a polyline path with micro wobble
+        def draw_cluster(start_xy: tuple[int, int], direction: np.ndarray, length_px: float) -> None:
+            dir_vec = direction / (np.linalg.norm(direction) + 1e-6)
+            # Perpendicular
+            nrm = np.array([-dir_vec[1], dir_vec[0]], dtype=np.float32)
+            # Steps along the path
+            step_px = 8.0
+            steps = max(4, int(length_px / step_px))
+            pts = []
+            wob_amp = 0.6 + 1.4 * vis  # micro wobble amplitude in px
+            wob = 0.0
+            x, y = float(start_xy[0]), float(start_xy[1])
+            for i in range(steps):
+                # Cumulative small wobble for smoothness
+                wob += float(rng.normal(0.0, 0.35))
+                off = np.clip(wob, -wob_amp, wob_amp)
+                px = x + dir_vec[0] * (i * step_px) + nrm[0] * off
+                py = y + dir_vec[1] * (i * step_px) + nrm[1] * off
+                pts.append((int(round(px)), int(round(py))))
+            if len(pts) < 2:
+                return
+            # Central dark groove
+            thickness = 1 if rng.random() < 0.85 else 2
+            cv2.polylines(dark_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=thickness, lineType=cv2.LINE_AA)
+            # Parallel companions (very close)
+            companions = 1 if rng.random() < 0.7 else 2 if rng.random() < 0.3 else 0
+            for k in range(companions):
+                off_sign = -1.0 if (k % 2 == 0) else 1.0
+                off_amt = (0.7 + 0.6 * rng.random()) * off_sign
+                pts2 = [(int(round(px + nrm[0] * off_amt)), int(round(py + nrm[1] * off_amt))) for (px, py) in pts]
+                cv2.polylines(dark_mask, [np.array(pts2, dtype=np.int32)], False, color=0.9, thickness=1, lineType=cv2.LINE_AA)
+            # Specular companion exactly on the groove line (ultra thin)
+            cv2.polylines(bright_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=1, lineType=cv2.LINE_AA)
+            # Haze: slightly wider mark for local softening
+            cv2.polylines(haze_mask, [np.array(pts, dtype=np.int32)], False, color=1.0, thickness=2 + (1 if thickness > 1 else 0), lineType=cv2.LINE_AA)
+
+        # Spawn clusters, biased to edges and spanning inward
+        for _ in range(n_clusters):
+            # Pick a side (0=L,1=R,2=T,3=B)
+            side = int(rng.integers(0, 4))
+            if side == 0:  # left
+                y0 = int(rng.integers(-h // 8, h + h // 8))
+                start = (-8, y0)
+                direction = np.array([1.0, rng.uniform(-0.35, 0.35)], dtype=np.float32)
+                inward = np.array([1.0, 0.0], dtype=np.float32)
+                d_edge = 1.0
+            elif side == 1:  # right
+                y0 = int(rng.integers(-h // 8, h + h // 8))
+                start = (w + 8, y0)
+                direction = np.array([-1.0, rng.uniform(-0.35, 0.35)], dtype=np.float32)
+                inward = np.array([-1.0, 0.0], dtype=np.float32)
+                d_edge = 1.0
+            elif side == 2:  # top
+                x0 = int(rng.integers(-w // 8, w + w // 8))
+                start = (x0, -8)
+                direction = np.array([rng.uniform(-0.35, 0.35), 1.0], dtype=np.float32)
+                inward = np.array([0.0, 1.0], dtype=np.float32)
+                d_edge = 1.0
+            else:  # bottom
+                x0 = int(rng.integers(-w // 8, w + w // 8))
+                start = (x0, h + 8)
+                direction = np.array([rng.uniform(-0.35, 0.35), -1.0], dtype=np.float32)
+                inward = np.array([0.0, -1.0], dtype=np.float32)
+                d_edge = 1.0
+            # Length scaled by vis and size, slight inward bias
+            base_len = (0.45 + 0.75 * rng.random()) * (0.65 + 0.7 * vis) * float(max(h, w))
+            # Occasional short cluster (micro scuffs)
+            if rng.random() < (0.25 + 0.35 * (1.0 - vis)):
+                base_len *= 0.45
+            # Small inward "pull" to avoid exiting immediately
+            direction = (direction * 0.85 + inward * 0.15).astype(np.float32)
+            draw_cluster(start, direction, base_len)
+
+        # Post-process masks
+        if dark_mask.max() > 0:
+            dark_mask = cv2.GaussianBlur(dark_mask, (0, 0), sigmaX=0.6)
+        if bright_mask.max() > 0:
+            # Gate by highlights; keep ultra thin and sparse
+            bright_mask = bright_mask * (gate ** 1.6)
+            bright_mask = cv2.GaussianBlur(bright_mask, (0, 0), sigmaX=0.5)
+        if haze_mask.max() > 0:
+            haze_mask = cv2.GaussianBlur(haze_mask, (0, 0), sigmaX=1.6)
+            # Only haze where there is a dark groove
+            haze_mask = np.minimum(haze_mask, cv2.GaussianBlur(dark_mask, (0, 0), sigmaX=1.2))
+        dark_mask = np.clip(dark_mask, 0.0, 1.0).astype(np.float32)
+        bright_mask = np.clip(bright_mask, 0.0, 1.0).astype(np.float32)
+        haze_mask = np.clip(haze_mask, 0.0, 1.0).astype(np.float32)
+        # Strengths
+        dark_k = np.float32(0.18 + 0.36 * vis)    # multiplicative dimming
+        bright_k = np.float32(0.05 + 0.22 * vis)  # additive highlight (gated)
+        haze_k = np.float32(0.06 + 0.18 * vis)    # local soft haze
+        # Apply dark grooves (edge-biased slightly stronger)
+        edge_boost = (0.85 + 0.30 * edge_bias).astype(np.float32)
+        dark3 = self._ensure_3c(dark_mask * edge_boost)
+        out = self._clip01(img_f * (1.0 - dark_k * dark3))
+        # Apply specular companions (white, highlight-gated)
+        if bright_k > 0:
+            spec3 = self._ensure_3c(bright_mask * gate)
+            out = self._clip01(out + bright_k * spec3)
+        # Local haze along scratches (blend with a slightly blurred base)
+        if haze_k > 0:
+            base_blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.35)
+            haze3 = self._ensure_3c(haze_mask)
+            out = self._clip01(out * (1.0 - 0.5 * haze_k * haze3) + base_blur * (0.5 * haze_k * haze3))
         return out
 
     def _expired_film(self, img: np.ndarray, t: float, seed: Optional[int]) -> np.ndarray:
