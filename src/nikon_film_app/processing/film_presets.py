@@ -189,16 +189,23 @@ def _apply_vibrance(img: np.ndarray, vibrance: float) -> np.ndarray:
 
 
 def _vignette(img: np.ndarray, strength: float) -> np.ndarray:
+    """Optical vignette: keep center, darken toward edges (blacker corners)."""
     if strength <= 0.0:
         return img
+    s = float(np.clip(strength, 0.0, 1.0))
     h, w = img.shape[:2]
     y, x = np.ogrid[:h, :w]
-    cy, cx = h / 2.0, w / 2.0
-    ry, rx = h / 2.0, w / 2.0
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    ry, rx = max(h / 2.0, 1e-6), max(w / 2.0, 1e-6)
+    # 0 at center → 1 at / beyond ellipse edge
     dist = np.sqrt(((y - cy) / ry) ** 2 + ((x - cx) / rx) ** 2)
-    mask2d = 1.0 - np.clip(dist, 0.0, 1.0)
-    mask2d = mask2d ** (1.0 + 3.0 * strength)
-    return _clip01(img * mask2d[..., None] + (1 - mask2d[..., None]) * img * (1 - 0.15 * strength))
+    falloff = np.clip(dist, 0.0, 1.0).astype(np.float32)
+    # Cosine-ish smooth falloff; higher strength → darker edges + wider reach
+    # edge_dark in ~[0.35, 0.92] so corners clearly go blacker
+    edge_dark = 0.35 + 0.57 * s
+    power = 1.35 + 1.1 * s
+    atten = 1.0 - edge_dark * (falloff ** power)
+    return _clip01(img.astype(np.float32) * atten[..., None])
 
 
 class GrainType(str, Enum):
