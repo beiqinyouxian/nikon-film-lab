@@ -326,31 +326,52 @@ class MainWindow(QtWidgets.QMainWindow):
             row.addWidget(widget, 1)
             return w
 
-        params_box = QtWidgets.QGroupBox("参数")
-        grid = QtWidgets.QGridLayout(params_box)
-        grid.setContentsMargins(6, 8, 6, 6)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(4)
+        # —— 分组与辅助线 —— #
+        def _hline() -> QtWidgets.QFrame:
+            ln = QtWidgets.QFrame()
+            ln.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+            ln.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+            ln.setStyleSheet("QFrame{color:#dcdcdc; background:#dcdcdc; max-height:1px;}")
+            return ln
 
-        # Row 0: preset / strength / vignette / vignette amount
-        grid.addWidget(_pair_row("预设", self.preset_combo), 0, 0)
-        grid.addWidget(_pair_row("强度", self.strength_slider), 0, 1)
-        grid.addWidget(_pair_row("暗角", self.vignette_mode), 0, 2)
-        grid.addWidget(_pair_row("暗角量", self.vignette_amount), 0, 3)
+        # 基础 / 预设
+        basics_box = QtWidgets.QGroupBox("基础 / 预设")
+        bgrid = QtWidgets.QGridLayout(basics_box)
+        bgrid.setContentsMargins(6, 8, 6, 6)
+        bgrid.setHorizontalSpacing(8)
+        bgrid.setVerticalSpacing(4)
+        bgrid.addWidget(_pair_row("预设", self.preset_combo), 0, 0)
+        bgrid.addWidget(_pair_row("强度", self.strength_slider), 0, 1)
+        bgrid.addWidget(_pair_row("暗角", self.vignette_mode), 0, 2)
+        bgrid.addWidget(_pair_row("暗角量", self.vignette_amount), 0, 3)
+        bgrid.addWidget(self.auto_check, 1, 0)
+        bgrid.addWidget(_pair_row("后端", self.backend_combo), 1, 1)
+        for c in range(4):
+            bgrid.setColumnStretch(c, 1)
 
-        # Row 1: exposure / temp / contrast / clarity
-        grid.addWidget(_pair_row("曝光", self.exposure_slider), 1, 0)
-        grid.addWidget(_pair_row("色温", self.temp_slider), 1, 1)
-        grid.addWidget(_pair_row("对比", self.contrast_slider), 1, 2)
-        grid.addWidget(_pair_row("清晰", self.clarity_slider), 1, 3)
+        # 影调 / 色彩
+        tone_box = QtWidgets.QGroupBox("影调 / 色彩")
+        tgrid = QtWidgets.QGridLayout(tone_box)
+        tgrid.setContentsMargins(6, 8, 6, 6)
+        tgrid.setHorizontalSpacing(8)
+        tgrid.setVerticalSpacing(4)
+        tgrid.addWidget(_pair_row("曝光", self.exposure_slider), 0, 0)
+        tgrid.addWidget(_pair_row("色温", self.temp_slider), 0, 1)
+        tgrid.addWidget(_pair_row("对比", self.contrast_slider), 0, 2)
+        tgrid.addWidget(_pair_row("清晰", self.clarity_slider), 0, 3)
+        tgrid.addWidget(_pair_row("高光", self.highlights_slider), 1, 0)
+        tgrid.addWidget(_pair_row("阴影", self.shadows_slider), 1, 1)
+        tgrid.addWidget(_pair_row("鲜艳", self.vibrance_slider), 1, 2)
+        tgrid.addWidget(_pair_row("饱和", self.saturation_slider), 1, 3)
+        for c in range(4):
+            tgrid.setColumnStretch(c, 1)
 
-        # Row 2: highlights / shadows / vibrance / saturation
-        grid.addWidget(_pair_row("高光", self.highlights_slider), 2, 0)
-        grid.addWidget(_pair_row("阴影", self.shadows_slider), 2, 1)
-        grid.addWidget(_pair_row("鲜艳", self.vibrance_slider), 2, 2)
-        grid.addWidget(_pair_row("饱和", self.saturation_slider), 2, 3)
-
-        # Row 3: grain controls
+        # 颗粒
+        grain_box = QtWidgets.QGroupBox("颗粒")
+        ggrid = QtWidgets.QGridLayout(grain_box)
+        ggrid.setContentsMargins(6, 8, 6, 6)
+        ggrid.setHorizontalSpacing(8)
+        ggrid.setVerticalSpacing(4)
         grain_head = QtWidgets.QWidget()
         gh = QtWidgets.QHBoxLayout(grain_head)
         gh.setContentsMargins(0, 0, 4, 0)
@@ -358,20 +379,21 @@ class MainWindow(QtWidgets.QMainWindow):
         gh.addWidget(self.grain_check)
         gh.addWidget(self.grain_preset_btn)
         gh.addStretch(1)
-        grid.addWidget(grain_head, 3, 0)
-        grid.addWidget(_pair_row("类型", self.grain_type), 3, 1)
-        grid.addWidget(_pair_row("大小", self.grain_size), 3, 2)
-        grid.addWidget(_pair_row("密度", self.grain_density), 3, 3)
-
-        # Row 4: grain rough/chroma + auto + backend
-        grid.addWidget(_pair_row("粗糙", self.grain_rough), 4, 0)
-        grid.addWidget(_pair_row("彩混", self.grain_chroma), 4, 1)
-        grid.addWidget(self.auto_check, 4, 2)
-        grid.addWidget(_pair_row("后端", self.backend_combo), 4, 3)
-
+        ggrid.addWidget(grain_head, 0, 0)
+        ggrid.addWidget(_pair_row("类型", self.grain_type), 0, 1)
+        ggrid.addWidget(_pair_row("大小", self.grain_size), 0, 2)
+        ggrid.addWidget(_pair_row("密度", self.grain_density), 0, 3)
+        ggrid.addWidget(_pair_row("粗糙", self.grain_rough), 1, 0)
+        ggrid.addWidget(_pair_row("彩混", self.grain_chroma), 1, 1)
         for c in range(4):
-            grid.setColumnStretch(c, 1)
-        # 特色效果：以4列一行的紧凑单元加入参数网格
+            ggrid.setColumnStretch(c, 1)
+
+        # 镜头与胶片缺陷
+        fx_box = QtWidgets.QGroupBox("镜头与胶片缺陷")
+        fgrid = QtWidgets.QGridLayout(fx_box)
+        fgrid.setContentsMargins(6, 8, 6, 6)
+        fgrid.setHorizontalSpacing(8)
+        fgrid.setVerticalSpacing(4)
         def _fx_cell(check: QtWidgets.QCheckBox, slider: QtWidgets.QSlider) -> QtWidgets.QWidget:
             w = QtWidgets.QWidget()
             h = QtWidgets.QHBoxLayout(w)
@@ -380,11 +402,13 @@ class MainWindow(QtWidgets.QMainWindow):
             h.addWidget(check)
             h.addWidget(slider, 1)
             return w
-        grid.addWidget(_fx_cell(self.fx_lens_check, self.fx_lens_slider), 5, 0)
-        grid.addWidget(_fx_cell(self.fx_scratches_check, self.fx_scratches_slider), 5, 1)
-        grid.addWidget(_fx_cell(self.fx_defects_check, self.fx_defects_slider), 5, 2)
-        grid.addWidget(_fx_cell(self.fx_partial_check, self.fx_partial_slider), 5, 3)
-        # 分色器：两行（饱和/明度）x 8 列，紧凑滑条
+        fgrid.addWidget(_fx_cell(self.fx_lens_check, self.fx_lens_slider), 0, 0)
+        fgrid.addWidget(_fx_cell(self.fx_scratches_check, self.fx_scratches_slider), 0, 1)
+        fgrid.addWidget(_fx_cell(self.fx_defects_check, self.fx_defects_slider), 0, 2)
+        fgrid.addWidget(_fx_cell(self.fx_partial_check, self.fx_partial_slider), 0, 3)
+        for c in range(4):
+            fgrid.setColumnStretch(c, 1)
+        # 分色器：两行（饱和/明度）x 8 列，紧凑滑条（独立分组）
         splitter_box = QtWidgets.QGroupBox("分色器")
         split_grid = QtWidgets.QGridLayout(splitter_box)
         split_grid.setContentsMargins(6, 6, 6, 6)
@@ -412,21 +436,34 @@ class MainWindow(QtWidgets.QMainWindow):
             _short_slider(l)
             self.hsl_lum_sliders.append(l)
             split_grid.addWidget(l, 2, col)
-        # Row labels on the left
-        split_grid.addWidget(QtWidgets.QLabel("饱和"), 1, 8, 1, 1)  # placed after columns as legend
-        split_grid.addWidget(QtWidgets.QLabel("明度"), 2, 8, 1, 1)
-        grid.addWidget(splitter_box, 6, 0, 1, 4)
+        # 行说明文本
+        leg_sat = QtWidgets.QLabel("饱和")
+        leg_sat.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        leg_lum = QtWidgets.QLabel("明度")
+        leg_lum.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        split_grid.addWidget(leg_sat, 1, 7)
+        split_grid.addWidget(leg_lum, 2, 7)
+
+        # 组装外层布局（带分割线）
+        params_outer = QtWidgets.QVBoxLayout()
+        params_outer.setContentsMargins(4, 4, 4, 4)
+        params_outer.setSpacing(6)
+        params_outer.addWidget(basics_box)
+        params_outer.addWidget(_hline())
+        params_outer.addWidget(tone_box)
+        params_outer.addWidget(_hline())
+        params_outer.addWidget(grain_box)
+        params_outer.addWidget(_hline())
+        params_outer.addWidget(fx_box)
+        params_outer.addWidget(_hline())
+        params_outer.addWidget(splitter_box)
+
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(6)
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
         btns.addStretch(1)
-
-        params_outer = QtWidgets.QVBoxLayout()
-        params_outer.setContentsMargins(4, 4, 4, 4)
-        params_outer.setSpacing(4)
-        params_outer.addWidget(params_box)
         params_outer.addLayout(btns)
         tip = QtWidgets.QLabel("提示：拖动粗分隔条调节预览/参数高度；导出始终全分辨率。")
         tip.setWordWrap(True)
