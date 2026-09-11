@@ -18,7 +18,8 @@ block_cipher = None
 
 app_name = "NikonFilmLab"
 # Resolve repo root relative to this spec file (which lives in packaging/)
-SPEC_DIR = Path(__file__).resolve().parent
+# Note: In PyInstaller spec execution, __file__ is NOT defined; use SPECPATH.
+SPEC_DIR = Path(SPECPATH).resolve()
 REPO_ROOT = SPEC_DIR.parent
 entry_script = str(REPO_ROOT / "src" / "nikon_film_app" / "main.py")
 
