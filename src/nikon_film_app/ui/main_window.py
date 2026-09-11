@@ -223,6 +223,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.file_processed.connect(self.on_file_processed)
         self.thread.preview_ready.connect(self.on_preview_ready)
 
+    def on_files_dropped(self, paths: List[str]) -> None:
+        self._add_paths(paths)
+
     def on_add_files(self) -> None:
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择文件", "", "Images (*.nef *.NEF *.jpg *.jpeg)")
         self._add_paths(files)
