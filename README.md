@@ -132,3 +132,56 @@ pyinstaller --noconfirm --clean packaging/NikonFilmLab.spec
 - 已在 spec 中收集 PySide6、cv2、rawpy 的二进制与资源
 - rawpy/LibRaw、OpenCV 与 Qt 插件均已打包到 onedir 结果中
 
+---
+
+## Rust 重写（进行中）
+
+为获得更好的运行性能与 Windows 原生发行版，我们在不破坏现有 Python 应用的前提下，旁挂一个 Rust 重写版本（逐步对齐功能）。Rust 项目位于 `rust/`，采用 `cargo` 工作区：
+
+- `rust/crates/film_core`：核心图像处理库（预设/手动/颗粒/暗角/特色 FX/分色器 API）
+- `rust/crates/film_gui`：基于 egui/eframe 的桌面 GUI（中文 UI）
+
+目前交付策略（分阶段）：
+1. 工作区与 README（本次已完成）
+2. 核心处理库：提供预设与手动参数 API + 单元测试（已提供 MVP）
+3. GUI 外壳：队列/单图预览/参数连通（已提供 MVP；JPG 优先）
+4. Windows 发布工作流：GitHub Actions 产出 `.exe/.zip`（本次已添加工作流文件）
+5. 特性清单：已移植 vs 仍由 Python 提供（见下）
+
+### 架构与构建
+- UI：egui + eframe（后续如需，也可评估 iced/Slint 替代）
+- 图像：image/ndarray + 自写快速路径；并行 rayon；MVP 支持 JPG，NEF 解码计划使用 `rawloader`（纯 Rust）或后续切到 LibRaw 绑定
+- 打包：`cargo build --release`，Windows 由 CI 生成 `.zip` 工件；后续可加入安装器
+
+本地构建（Rust）：
+```bash
+cd rust
+cargo build --release -p film_gui
+# 运行
+cargo run -p film_gui
+```
+生成可执行文件（Windows/macOS/Linux）：`rust/target/release/nikon-film-lab-rs{.exe}`
+
+### Rust 版功能清单（MVP）
+- 已实现（Rust）：
+  - 队列（添加文件/文件夹，JPG/JPEG）与单图预览
+  - 预设（示例：不处理 / Chrome 经典 / Kodak Portra 400），强度与推荐强度
+  - 手动：曝光、色温、清晰、对比、高光、阴影、鲜艳、饱和
+  - 颗粒：三种类型参数（MVP 粗粒度实现）
+  - 暗角：不处理/自动/手动（手动强度）
+  - 特色 FX：过期胶片、漏光（MVP 可见实现）
+  - 分色器：8 段饱和/明度（核心已支持，GUI 后续接线）
+  - 单元测试：形状保持、基础参数有效性
+- 待办（仍由 Python 版提供或下一阶段迁移）：
+  - NEF（RAW）解码：计划 `rawloader`（纯 Rust），或 LibRaw 绑定（需本地库）
+  - 导出全分辨率 JPEG（MVP 先专注预览；导出将很快补齐）
+  - 队列缩略图与缩略自适应列宽（GUI 进一步美化）
+  - OpenCL/GPU（非阻塞项；先专注 CPU 热路径）
+
+### CI：Windows 可执行文件（Rust）
+- 工作流：`.github/workflows/windows-rust.yml`
+- 触发：推送到 `cursor/rust-rewrite-0eab` 或手动
+- 产物：`nikon-film-lab-rs-windows-x86_64.zip`（包含 `nikon-film-lab-rs.exe`）
+
+如需更多细节，请查看 `rust/crates/film_core/src/lib.rs` 与 `rust/crates/film_gui/src/main.rs`。
+
