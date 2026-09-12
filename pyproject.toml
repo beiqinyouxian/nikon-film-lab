@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nikon-film-lab"
+version = "0.1.0"
+description = "Desktop app: Nikon RAW/JPG film-look stylization with CPU/OpenCL acceleration"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Cursor Cloud Agent" }]
+license = { text = "MIT" }
+keywords = ["nikon", "nef", "raw", "photo", "film", "opencv", "pyside6"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+  "Environment :: X11 Applications :: Qt",
+]
+dependencies = [
+  "PySide6>=6.6",
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "Pillow>=10.0.0",
+  "rawpy>=0.18.1",
+  "piexif>=1.1.3",
+  "scipy>=1.11",
+  "pytest>=8.0.0"
+]
+
+[project.scripts]
+nikon-film-app = "nikon_film_app.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
