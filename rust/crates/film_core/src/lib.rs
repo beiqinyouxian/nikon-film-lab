@@ -136,6 +136,79 @@ static PRESETS: Lazy<Vec<FilmPreset>> = Lazy::new(|| {
             default_vignette01: 0.20,
             process: preset_portra_400,
         },
+        // 其余预设（简化近似）
+        FilmPreset {
+            name: "Leica Color Modern",
+            recommended_strength: 78,
+            default_vignette01: 0.12,
+            process: |img, s| simple_color_preset(img, s, 0.14, 0.02, false),
+        },
+        FilmPreset {
+            name: "Leica Classic Mono",
+            recommended_strength: 90,
+            default_vignette01: 0.20,
+            process: |img, s| simple_color_preset(img, s, 0.28, -1.0, true),
+        },
+        FilmPreset {
+            name: "Leica Chrome Vivid",
+            recommended_strength: 85,
+            default_vignette01: 0.15,
+            process: |img, s| simple_color_preset(img, s, 0.16, 0.16, false),
+        },
+        FilmPreset {
+            name: "Chrome 浓彩",
+            recommended_strength: 88,
+            default_vignette01: 0.14,
+            process: |img, s| simple_color_preset(img, s, 0.20, 0.24, false),
+        },
+        FilmPreset {
+            name: "Chrome 鲜艳",
+            recommended_strength: 90,
+            default_vignette01: 0.15,
+            process: |img, s| simple_color_preset(img, s, 0.22, 0.28, false),
+        },
+        FilmPreset {
+            name: "Kodak Gold 200",
+            recommended_strength: 78,
+            default_vignette01: 0.18,
+            process: |img, s| simple_color_preset(img, s, 0.12, 0.10, false),
+        },
+        FilmPreset {
+            name: "Fuji Velvia 50",
+            recommended_strength: 85,
+            default_vignette01: 0.15,
+            process: |img, s| simple_color_preset(img, s, 0.18, 0.35, false),
+        },
+        FilmPreset {
+            name: "Fuji Pro 400H",
+            recommended_strength: 72,
+            default_vignette01: 0.18,
+            process: |img, s| simple_color_preset(img, s, 0.02, -0.08, false),
+        },
+        FilmPreset {
+            name: "Ilford HP5 (B&W)",
+            recommended_strength: 88,
+            default_vignette01: 0.22,
+            process: |img, s| simple_color_preset(img, s, 0.22, -1.0, true),
+        },
+        FilmPreset {
+            name: "Kodak Tri-X",
+            recommended_strength: 92,
+            default_vignette01: 0.28,
+            process: |img, s| simple_color_preset(img, s, 0.30, -1.0, true),
+        },
+        FilmPreset {
+            name: "Cinestill 800T",
+            recommended_strength: 80,
+            default_vignette01: 0.25,
+            process: |img, s| simple_color_preset(img, s, 0.12, 0.08, false),
+        },
+        FilmPreset {
+            name: "Agfa Vista",
+            recommended_strength: 76,
+            default_vignette01: 0.18,
+            process: |img, s| simple_color_preset(img, s, 0.10, 0.06, false),
+        },
     ]
 });
 
@@ -213,6 +286,15 @@ pub fn process_rgb8(input: &RgbImage, opts: &ProcessOptions) -> RgbImage {
         out = apply_vignette(&out, amount);
     }
     // 6) 独立特效（镜头老化/划痕/过期/漏光）— MVP：先放置可见的“过期”和“漏光”
+    if opts.enable_lens_aging && opts.lens_aging > 0 {
+        let t = (opts.lens_aging as f32 / 100.0).clamp(0.0, 1.0);
+        out = fx_lens_aging(&out, t);
+    }
+    if opts.enable_scratches && opts.scratches > 0 {
+        let t = (opts.scratches as f32 / 100.0).clamp(0.0, 1.0);
+        let seed = opts.fx_seed.unwrap_or_else(|| opts.grain_seed.unwrap_or(41));
+        out = fx_scratches(&out, t, seed + 41);
+    }
     if opts.enable_expired_film && opts.expired_film > 0 {
         out = fx_expired_film(&out, opts.fx_seed.unwrap_or(29), opts.expired_film as f32 / 100.0);
     }
@@ -293,6 +375,25 @@ fn preset_portra_400(img: &RgbImage, strength01: f32) -> RgbImage {
     // 简单高光卷曲
     out = highlight_rolloff(&out, 0.18 * strength01);
     // 轻微暗角
+    out
+}
+
+fn simple_color_preset(img: &RgbImage, strength01: f32, contrast: f32, saturation: f32, monochrome: bool) -> RgbImage {
+    // 基于强度的简化风格：对比+饱和；可选单色；轻微高光卷曲
+    let mut out = img.clone();
+    // blend: 使用 strength01 缩放目标量
+    out = adjust_contrast_mid(&out, contrast * strength01);
+    out = adjust_saturation(&out, saturation * strength01);
+    if monochrome {
+        let mut mono = out.clone();
+        for p in mono.pixels_mut() {
+            let v = to_rgb01(p);
+            let l = (0.114 * v[0] + 0.587 * v[1] + 0.299 * v[2]) as f32;
+            *p = from_rgb01([l, l, l]);
+        }
+        out = mono;
+    }
+    out = highlight_rolloff(&out, 0.10 * strength01);
     out
 }
 
@@ -711,6 +812,135 @@ pub fn apply_vignette(img: &RgbImage, strength01: f32) -> RgbImage {
 }
 
 // ---------------- 特效（MVP 可见版） ----------------
+
+/// 镜头老化：暖色偏 + 轻纱化 + 边缘柔化 + 轻微对比下降 + 轻暗角
+pub fn fx_lens_aging(img: &RgbImage, t: f32) -> RgbImage {
+    if t <= 1e-6 {
+        return img.clone();
+    }
+    let (w, h) = img.dimensions();
+    let mut out = img.clone();
+    // 暖色偏
+    for p in out.pixels_mut() {
+        let v = to_rgb01(p);
+        let r = v[2] * (1.0 + 0.08 * t);
+        let g = v[1] * (1.0 + 0.03 * t);
+        let b = v[0] * (1.0 - 0.07 * t);
+        *p = from_rgb01([b, g, r]);
+    }
+    // 轻纱化（高亮掩模 + 模糊光晕）
+    let blur = box_blur_rgb(&out, 3);
+    let mut mixed = out.clone();
+    for (m, b) in mixed.pixels_mut().zip(blur.pixels()) {
+        let vm = to_rgb01(m);
+        let vb = to_rgb01(b);
+        let l = 0.114 * vm[0] + 0.587 * vm[1] + 0.299 * vm[2];
+        let hi = ((l - 0.55) / 0.45).clamp(0.0, 1.0);
+        let k = 0.35 * t * hi;
+        let res = [
+            vm[0] * (1.0 - k) + vb[0] * k,
+            vm[1] * (1.0 - k) + vb[1] * k,
+            vm[2] * (1.0 - k) + vb[2] * k,
+        ];
+        *m = from_rgb01(res);
+    }
+    out = mixed;
+    // 边缘柔化：用径向掩模与模糊版混合
+    let soft = box_blur_rgb(&out, 2);
+    let cy = (h as f32 - 1.0) * 0.5;
+    let cx = (w as f32 - 1.0) * 0.5;
+    let ry = (h as f32 * 0.5).max(1.0);
+    let rx = (w as f32 * 0.5).max(1.0);
+    let mut final_img = out.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let dy = (y as f32 - cy) / ry;
+            let dx = (x as f32 - cx) / rx;
+            let edge = (dx * dx + dy * dy).sqrt().clamp(0.0, 1.0);
+            let wgt = 0.30 * t * edge; // 边缘更柔
+            let p = final_img.get_pixel_mut(x, y);
+            let v = to_rgb01(p);
+            let vb = to_rgb01(soft.get_pixel(x, y));
+            *p = from_rgb01([
+                v[0] * (1.0 - wgt) + vb[0] * wgt,
+                v[1] * (1.0 - wgt) + vb[1] * wgt,
+                v[2] * (1.0 - wgt) + vb[2] * wgt,
+            ]);
+        }
+    }
+    // 轻微对比下降 + 轻暗角
+    final_img = adjust_contrast_mid(&final_img, -0.22 * t);
+    final_img = apply_vignette(&final_img, 0.06 + 0.10 * t);
+    final_img
+}
+
+/// 划痕：细长暗纹 + 亮色伴随 + 局部纱化（近似）
+pub fn fx_scratches(img: &RgbImage, t: f32, seed: u64) -> RgbImage {
+    if t <= 1e-6 {
+        return img.clone();
+    }
+    let (w, h) = img.dimensions();
+    let mut rng = StdRng::seed_from_u64(seed);
+    // 蒙版
+    let mut dark = vec![0f32; (w * h) as usize];
+    let mut bright = vec![0f32; (w * h) as usize];
+    let lines = (6.0 + 22.0 * t) as usize;
+    // 画若干来自边缘的折线（简化为直线）
+    for _ in 0..lines {
+        // 随机边起点与方向
+        let side = rng.gen_range(0..4);
+        let (mut x0, mut y0, dx, dy) = match side {
+            0 => (0i32, rng.gen_range(0..h as i32), 1i32, rng.gen_range(-2..=2)),        // 左
+            1 => (w as i32 - 1, rng.gen_range(0..h as i32), -1, rng.gen_range(-2..=2)), // 右
+            2 => (rng.gen_range(0..w as i32), 0i32, rng.gen_range(-2..=2), 1),          // 上
+            _ => (rng.gen_range(0..w as i32), h as i32 - 1, rng.gen_range(-2..=2), -1), // 下
+        };
+        let len = ((w.max(h)) as f32 * (0.45 + 0.35 * rng.gen::<f32>())) as i32;
+        for _ in 0..len {
+            if x0 >= 0 && x0 < w as i32 && y0 >= 0 && y0 < h as i32 {
+                let idx = (y0 as u32 * w + x0 as u32) as usize;
+                dark[idx] = dark[idx].max(1.0);
+                // 明亮伴随一条像素
+                bright[idx] = bright[idx].max(1.0);
+            }
+            x0 += dx;
+            y0 += dy;
+        }
+    }
+    // 轻微模糊柔化
+    box_blur_1c_inplace(&mut dark, w as usize, h as usize, 1);
+    box_blur_1c_inplace(&mut bright, w as usize, h as usize, 1);
+    // 计算亮度门控
+    let mut out = img.clone();
+    // 先做暗纹
+    for (i, p) in out.pixels_mut().enumerate() {
+        let v = to_rgb01(p);
+        let l = 0.114 * v[0] + 0.587 * v[1] + 0.299 * v[2];
+        let edge_k = 0.18 + 0.36 * t;
+        let d = (dark[i].clamp(0.0, 1.0)) * edge_k;
+        *p = from_rgb01([v[0] * (1.0 - d), v[1] * (1.0 - d), v[2] * (1.0 - d)]);
+        // 亮色伴随，仅在较亮区域显现
+        let gate = ((l - 0.58) / 0.25).clamp(0.0, 1.0).powf(1.6);
+        let bk = (0.05 + 0.22 * t) * gate * bright[i].clamp(0.0, 1.0);
+        let vv = to_rgb01(p);
+        *p = from_rgb01([vv[0] + bk, vv[1] + bk, vv[2] + bk]);
+    }
+    // 局部纱化：沿划痕混合模糊
+    let blur = box_blur_rgb(&out, 2);
+    for (i, p) in out.pixels_mut().enumerate() {
+        let haze = (0.06 + 0.18 * t) * dark[i].clamp(0.0, 1.0);
+        if haze > 1e-6 {
+            let v = to_rgb01(p);
+            let vb = to_rgb01(&blur.pixels().nth(i).unwrap());
+            *p = from_rgb01([
+                v[0] * (1.0 - 0.5 * haze) + vb[0] * (0.5 * haze),
+                v[1] * (1.0 - 0.5 * haze) + vb[1] * (0.5 * haze),
+                v[2] * (1.0 - 0.5 * haze) + vb[2] * (0.5 * haze),
+            ]);
+        }
+    }
+    out
+}
 
 pub fn fx_expired_film(img: &RgbImage, seed: u64, t: f32) -> RgbImage {
     if t <= 1e-6 {

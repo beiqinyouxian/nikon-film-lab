@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use eframe::{egui, egui::{ColorImage, TextureHandle}};
 use egui_extras::RetainedImage;
 use film_core::{self as core, ProcessOptions, GrainType, VignetteMode};
-use image::{RgbImage, DynamicImage, GenericImageView, ImageBuffer, Rgb};
+use image::RgbImage;
+use std::fs;
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -41,6 +42,8 @@ struct AppState {
     // 防抖
     last_change: Instant,
     need_render: bool,
+    export_dir: PathBuf,
+    last_queue_width: f32,
 }
 
 impl Default for AppState {
@@ -54,6 +57,8 @@ impl Default for AppState {
             vignette_mode_idx: 0,
             last_change: Instant::now(),
             need_render: false,
+            export_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            last_queue_width: 0.0,
         }
     }
 }
@@ -90,7 +95,20 @@ impl eframe::App for AppState {
                     self.preview_tex = None;
                 }
                 ui.separator();
-                ui.label("导出先略：MVP 展示预览与参数连通（导出随后补齐）");
+                ui.label("导出文件夹：");
+                let path_str = self.export_dir.to_string_lossy().to_string();
+                ui.monospace(ellipsize_path(&path_str, 48));
+                if ui.button("选择…").clicked() {
+                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                        self.export_dir = d;
+                    }
+                }
+                if ui.button("导出当前").clicked() {
+                    self.export_current();
+                }
+                if ui.button("导出全部").clicked() {
+                    self.export_all();
+                }
             });
         });
 
@@ -98,16 +116,36 @@ impl eframe::App for AppState {
             queue_width = ui.available_width();
             let mut select_idx: Option<usize> = None;
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (idx, it) in self.items.iter().enumerate() {
-                    let name = it.path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
-                    if ui.selectable_label(self.current == Some(idx), name).clicked() {
-                        select_idx = Some(idx);
+                for (idx, it) in self.items.iter_mut().enumerate() {
+                    // 生成或更新缩略
+                    if (self.last_queue_width - queue_width).abs() > 8.0 || it.thumb.is_none() {
+                        if let Some(img) = load_thumb_rgb8(&it.path, queue_width as u32) {
+                            it.thumb = Some(image_to_retained(img));
+                        }
+                        self.last_queue_width = queue_width;
                     }
+                    let name = it.path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        if let Some(t) = &it.thumb {
+                            let s = egui::vec2(queue_width.min(220.0), (queue_width.min(220.0) * 0.6).max(60.0));
+                            t.show_max_size(ui, s);
+                        }
+                        if ui.selectable_label(self.current == Some(idx), name).clicked() {
+                            select_idx = Some(idx);
+                        }
+                    });
                     ui.separator();
                 }
             });
             if let Some(i) = select_idx {
                 self.set_current(i, ctx);
+            }
+            // 拖放导入
+            if let Some(files) = dropped_files(ctx) {
+                let files: Vec<PathBuf> = files.into_iter().filter(|p| is_supported(p)).collect();
+                if !files.is_empty() {
+                    self.add_files(files);
+                }
             }
         });
 
@@ -178,6 +216,47 @@ impl eframe::App for AppState {
                 self.touch();
             }
             ui.separator();
+            // 分色器（8 段）
+            egui::CollapsingHeader::new("分色器（8 段）").default_open(false).show(ui, |ui| {
+                let bands = ["红","橙","黄","绿","青","蓝","紫","品红"];
+                ui.label("饱和（-100..100）");
+                let mut sat_changed = false;
+                for i in 0..8 {
+                    ui.horizontal(|ui| {
+                        ui.label(bands[i]);
+                        let mut v = self.opts.hsl_sat8[i] as i32;
+                        if ui.add(egui::Slider::new(&mut v, -100..=100).clamp_to_range(true)).changed() {
+                            self.opts.hsl_sat8[i] = v as i16;
+                            sat_changed = true;
+                        }
+                    });
+                }
+                ui.separator();
+                ui.label("明度（-100..100）");
+                let mut lum_changed = false;
+                for i in 0..8 {
+                    ui.horizontal(|ui| {
+                        ui.label(bands[i]);
+                        let mut v = self.opts.hsl_lum8[i] as i32;
+                        if ui.add(egui::Slider::new(&mut v, -100..=100).clamp_to_range(true)).changed() {
+                            self.opts.hsl_lum8[i] = v as i16;
+                            lum_changed = true;
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("分色器复位").clicked() {
+                        self.opts.hsl_sat8 = [0; 8];
+                        self.opts.hsl_lum8 = [0; 8];
+                        self.touch();
+                    }
+                });
+                if sat_changed || lum_changed {
+                    self.opts.enable_color_splitter = true;
+                    self.touch();
+                }
+            });
+            ui.separator();
             // 颗粒
             ui.horizontal(|ui| {
                 let mut enable = self.opts.enable_grain;
@@ -209,8 +288,32 @@ impl eframe::App for AppState {
                 if slider_u8_inline_simple(ui, "彩混", &mut self.opts.grain_chroma_mix) { self.touch(); }
             });
             ui.separator();
-            // 特色 FX（MVP：仅显示开关，功能已在内核实现 2 项）
+            // 特色 FX（镜头老化、划痕、过期、漏光）
             ui.horizontal(|ui| {
+                let mut lens = self.opts.enable_lens_aging;
+                if ui.checkbox(&mut lens, "镜头老化").changed() {
+                    self.opts.enable_lens_aging = lens;
+                    self.touch();
+                }
+                let mut lv = self.opts.lens_aging;
+                if ui.add(egui::Slider::new(&mut lv, 0..=100).text("强度")).changed() {
+                    self.opts.lens_aging = lv;
+                    if lv > 0 { self.opts.enable_lens_aging = true; }
+                    self.touch();
+                }
+                ui.separator();
+                let mut s = self.opts.enable_scratches;
+                if ui.checkbox(&mut s, "镜片划伤").changed() {
+                    self.opts.enable_scratches = s;
+                    self.touch();
+                }
+                let mut sv = self.opts.scratches;
+                if ui.add(egui::Slider::new(&mut sv, 0..=100).text("强度")).changed() {
+                    self.opts.scratches = sv;
+                    if sv > 0 { self.opts.enable_scratches = true; }
+                    self.touch();
+                }
+                ui.separator();
                 let mut e = self.opts.enable_expired_film;
                 if ui.checkbox(&mut e, "胶片过期").changed() {
                     self.opts.enable_expired_film = e;
@@ -219,6 +322,7 @@ impl eframe::App for AppState {
                 let mut d = self.opts.expired_film;
                 if ui.add(egui::Slider::new(&mut d, 0..=100).text("强度")).changed() {
                     self.opts.expired_film = d;
+                    if d > 0 { self.opts.enable_expired_film = true; }
                     self.touch();
                 }
                 ui.separator();
@@ -230,12 +334,13 @@ impl eframe::App for AppState {
                 let mut pl = self.opts.light_leak;
                 if ui.add(egui::Slider::new(&mut pl, 0..=100).text("强度")).changed() {
                     self.opts.light_leak = pl;
+                    if pl > 0 { self.opts.enable_light_leak = true; }
                     self.touch();
                 }
             });
             ui.separator();
             // 预览区域
-            ui.label("预览：参数变更 200ms 防抖实时更新；导出功能稍后补齐");
+            ui.label("预览：参数变更 200ms 防抖实时更新；导出为全分辨率 JPG（95）");
             ui.separator();
             let avail = ui.available_size();
             let rect = egui::Rect::from_min_size(ui.min_rect().min, avail);
@@ -361,4 +466,123 @@ fn slider_u8_inline_simple(ui: &mut egui::Ui, label: &str, v: &mut u8) -> bool {
     let changed = ui.add(egui::Slider::new(&mut tmp, 0..=100).show_value(false).clamp_to_range(true)).changed();
     if changed { *v = tmp as u8; }
     changed
+}
+
+// ---------- 拖放、缩略与导出 ----------
+
+fn dropped_files(ctx: &egui::Context) -> Option<Vec<PathBuf>> {
+    let files = ctx.input(|i| i.raw.dropped_files.clone());
+    if files.is_empty() { return None; }
+    let mut out = vec![];
+    for f in files {
+        if let Some(p) = f.path {
+            out.push(p);
+        }
+    }
+    Some(out)
+}
+
+fn load_thumb_rgb8(path: &Path, max_side: u32) -> Option<RgbImage> {
+    if !is_supported(path) { return None; }
+    let img = image::open(path).ok()?;
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let scale = (max_side as f32 / w.max(h) as f32).clamp(0.0, 1.0);
+    let (nw, nh) = if scale < 1.0 {
+        ((w as f32 * scale) as u32, (h as f32 * scale) as u32)
+    } else { (w, h) };
+    Some(image::imageops::resize(&rgb, nw.max(1), nh.max(1), image::imageops::FilterType::Triangle))
+}
+
+fn image_to_retained(img: RgbImage) -> RetainedImage {
+    // Convert to RGBA for egui_extras
+    let mut rgba = Vec::with_capacity((img.width() * img.height()) as usize * 4);
+    for p in img.pixels() {
+        rgba.push(p[0]);
+        rgba.push(p[1]);
+        rgba.push(p[2]);
+        rgba.push(255);
+    }
+    let ci = ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], &rgba);
+    RetainedImage::from_color_image("thumb", ci)
+}
+
+fn ellipsize_path(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len { return s.to_string(); }
+    let keep = max_len / 2;
+    format!("{}…{}", &s[..keep], &s[s.len()-keep..])
+}
+
+impl AppState {
+    fn export_current(&mut self) {
+        let Some(i) = self.current else { return; };
+        if let Some(item) = self.items.get(i) {
+            let Some(src) = self.src_rgb8.clone() else { return; };
+            let processed = core::process_rgb8(&src, &self.opts);
+            let name = item.path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let out_path = self.export_dir.join(format!("{name}_film.jpg"));
+            let exif = if is_supported(&item.path) { extract_exif_app1(&item.path).ok() } else { None };
+            if let Err(e) = write_jpeg_with_optional_exif(&processed, &out_path, exif.as_deref(), 95) {
+                eprintln!("导出失败: {e}");
+            }
+        }
+    }
+    fn export_all(&mut self) {
+        for idx in 0..self.items.len() {
+            let p = self.items[idx].path.clone();
+            if let Ok(core::InputImage::Rgb8(rgb)) = core::load_image_bgr_or_rgb8(p.to_string_lossy().as_ref()) {
+                let processed = core::process_rgb8(&rgb, &self.opts);
+                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+                let out_path = self.export_dir.join(format!("{name}_film.jpg"));
+                let exif = if is_supported(&p) { extract_exif_app1(&p).ok() } else { None };
+                let _ = write_jpeg_with_optional_exif(&processed, &out_path, exif.as_deref(), 95);
+            }
+        }
+    }
+}
+
+fn extract_exif_app1(path: &Path) -> std::io::Result<Vec<u8>> {
+    let data = fs::read(path)?;
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 { return Err(std::io::Error::new(std::io::ErrorKind::Other, "not jpeg")); }
+    let mut i = 2;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF { break; }
+        let marker = data[i + 1];
+        i += 2;
+        if i + 2 > data.len() { break; }
+        let len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        if i + len > data.len() { break; }
+        let payload = &data[i + 2..i + len];
+        if marker == 0xE1 && payload.starts_with(b"Exif\0\0") {
+            return Ok(payload.to_vec());
+        }
+        i += len;
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no exif"))
+}
+
+fn write_jpeg_with_optional_exif(img: &RgbImage, path: &Path, exif_app1: Option<&[u8]>, quality: u8) -> anyhow::Result<()> {
+    use image::codecs::jpeg::JpegEncoder;
+    let mut buf = Vec::new();
+    {
+        let mut enc = JpegEncoder::new_with_quality(&mut buf, quality);
+        enc.encode_image(&image::DynamicImage::ImageRgb8(img.clone()))?;
+    }
+    if let Some(app1) = exif_app1 {
+        if buf.len() >= 2 && buf[0] == 0xFF && buf[1] == 0xD8 {
+            let mut out = Vec::with_capacity(buf.len() + app1.len() + 4);
+            out.extend_from_slice(&buf[0..2]); // SOI
+            out.push(0xFF);
+            out.push(0xE1);
+            let len = (app1.len() as u16 + 2).to_be_bytes();
+            out.push(len[0]);
+            out.push(len[1]);
+            out.extend_from_slice(app1);
+            out.extend_from_slice(&buf[2..]);
+            fs::write(path, out)?;
+            return Ok(());
+        }
+    }
+    fs::write(path, buf)?;
+    Ok(())
 }
