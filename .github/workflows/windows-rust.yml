@@ -1,0 +1,46 @@
+name: Windows Build (Rust)
+
+on:
+  push:
+    branches:
+      - cursor/rust-rewrite-0eab
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Build (release)
+        run: |
+          cargo build --release -p film_gui
+          ls -la target/release
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/release/nikon-film-lab-rs.exe dist/
+          cd dist
+          7z a nikon-film-lab-rs-windows-x86_64.zip nikon-film-lab-rs.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikon-film-lab-rs-windows-x86_64
+          path: rust/dist/nikon-film-lab-rs-windows-x86_64.zip
