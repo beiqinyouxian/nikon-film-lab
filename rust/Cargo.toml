@@ -1,0 +1,38 @@
+[workspace]
+members = [
+  "crates/film_core",
+  "crates/film_gui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.76"
+authors = ["Nikon Film Lab Contributors"]
+description = "Rust rewrite of Nikon Film Lab - core processing and GUI"
+homepage = "https://github.com/beiqinyouxian/nikon-film-lab"
+repository = "https://github.com/beiqinyouxian/nikon-film-lab"
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = "0.25"
+ndarray = { version = "0.15", features = ["rayon"] }
+rayon = "1.10"
+rand = "0.8"
+palette = { version = "0.7", features = ["std", "approx"] }
+fast_image_resize = "3.0"
+once_cell = "1.19"
+log = "0.4"
+env_logger = "0.11"
+time = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+debug = 1
