@@ -1032,15 +1032,133 @@ pub enum InputImage {
 }
 
 pub fn load_image_bgr_or_rgb8(path: &str) -> Result<InputImage> {
-    let dyn_img = image::open(path).with_context(|| format!("无法打开图像: {}", path))?;
-    let rgb8 = dyn_to_rgb8(&dyn_img);
-    Ok(InputImage::Rgb8(rgb8))
+    let lower = path.to_lowercase();
+    if lower.ends_with(".nef") || lower.ends_with(".cr2") || lower.ends_with(".cr3")
+        || lower.ends_with(".arw") || lower.ends_with(".raf") || lower.ends_with(".rw2")
+        || lower.ends_with(".dng") || lower.ends_with(".orf") || lower.ends_with(".pef")
+        || lower.ends_with(".srw")
+    {
+        #[cfg(feature = "nef")]
+        {
+            let img = load_raw_fullres_bgr8(path)?;
+            return Ok(InputImage::Rgb8(img));
+        }
+        #[cfg(not(feature = "nef"))]
+        {
+            bail!("未启用 RAW 支持（编译特性 nef 关闭）");
+        }
+    } else {
+        let dyn_img = image::open(path).with_context(|| format!("无法打开图像: {}", path))?;
+        let rgb8 = dyn_to_rgb8(&dyn_img);
+        Ok(InputImage::Rgb8(rgb8))
+    }
 }
 
 #[cfg(feature = "nef")]
-pub fn load_nef_rgb8(_path: &str) -> Result<RgbImage> {
-    // TODO: 使用 rawloader 解码 NEF 到 8bit sRGB。MVP 暂未实现。
-    bail!("NEF 解码尚未在 MVP 中实现（请使用 JPG/JPEG 测试）");
+pub fn load_raw_fullres_bgr8(path: &str) -> Result<RgbImage> {
+    use demosaic::{demosaic, Algorithm, CfaPattern};
+    let raw = rawloader::decode_file(path).with_context(|| format!("RAW 解码失败: {}", path))?;
+    let w = raw.width;
+    let h = raw.height;
+    // 原始整数数据
+    let data_u16 = match &raw.data {
+        rawloader::RawImageData::Integer(v) => v,
+        _ => bail!("不支持的 RAW 数据类型"),
+    };
+    // 归一化并按 CFA 通道做黑白电平矫正
+    let mut mono = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let c = raw.cfa.color_at(y, x); // 0:R,1:G,2:B,3:E
+            let bl = raw.blacklevels[c.min(3)] as f32;
+            let wl = raw.whitelevels[c.min(3)] as f32;
+            let v = data_u16[idx] as f32;
+            let nv = ((v - bl) / (wl - bl)).clamp(0.0, 1.0);
+            mono[idx] = nv;
+        }
+    }
+    // CFA 映射到 demosaic 的模式
+    let cfa_pat = match raw.cfa.to_string().as_str() {
+        "RGGB" => CfaPattern::bayer_rggb(),
+        "BGGR" => CfaPattern::bayer_bggr(),
+        "GRBG" => CfaPattern::bayer_grbg(),
+        "GBRG" => CfaPattern::bayer_gbrg(),
+        other => {
+            // 兜底：尝试 RGGB
+            log::warn!("未知 CFA 模式 {}，使用 RGGB 近似", other);
+            CfaPattern::bayer_rggb()
+        }
+    };
+    // 去马赛克（Bilinear，后续可切换更高质量算法）
+    let mut rgb_planar = vec![0f32; 3 * w * h];
+    demosaic(&mono, w, h, &cfa_pat, Algorithm::Bilinear, &mut rgb_planar)
+        .map_err(|e| anyhow::anyhow!("demosaic 失败: {:?}", e))?;
+    // 白平衡
+    let wb = raw.wb_coeffs;
+    let (rwb, gwb, bwb) = (wb[0].max(0.01), wb[1].max(0.01), wb[2].max(0.01));
+    let plane = w * h;
+    for i in 0..plane {
+        rgb_planar[i] *= rwb;
+        rgb_planar[plane + i] *= gwb;
+        rgb_planar[2 * plane + i] *= bwb;
+    }
+    // 相机空间 -> XYZ -> sRGB
+    let cam2xyz = raw.cam_to_xyz_normalized(); // 3x4
+    let xyz2srgb = [
+        [ 3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660,  1.8760108,  0.0415560],
+        [ 0.0556434, -0.2040259,  1.0572252],
+    ];
+    // 合并矩阵（忽略第 4 列 E 分量）
+    let m = |r: usize, c: usize| -> f32 {
+        xyz2srgb[r][0] * cam2xyz[0][c] +
+        xyz2srgb[r][1] * cam2xyz[1][c] +
+        xyz2srgb[r][2] * cam2xyz[2][c]
+    };
+    let mtx = [
+        [m(0,0), m(0,1), m(0,2)],
+        [m(1,0), m(1,1), m(1,2)],
+        [m(2,0), m(2,1), m(2,2)],
+    ];
+    // 写入 BGR8
+    let mut out = RgbImage::new(w as u32, h as u32);
+    for i in 0..plane {
+        let r = rgb_planar[i];
+        let g = rgb_planar[plane + i];
+        let b = rgb_planar[2 * plane + i];
+        // 线性相机 RGB -> 线性 sRGB 近似（通过 XYZ）
+        let sr = (mtx[0][0]*r + mtx[0][1]*g + mtx[0][2]*b).clamp(0.0, 1.0);
+        let sg = (mtx[1][0]*r + mtx[1][1]*g + mtx[1][2]*b).clamp(0.0, 1.0);
+        let sb = (mtx[2][0]*r + mtx[2][1]*g + mtx[2][2]*b).clamp(0.0, 1.0);
+        // sRGB 伽马
+        let gamma = |x: f32| if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0/2.4) - 0.055 };
+        let sr = gamma(sr).clamp(0.0, 1.0);
+        let sg = gamma(sg).clamp(0.0, 1.0);
+        let sb = gamma(sb).clamp(0.0, 1.0);
+        let x = (i % w) as u32;
+        let y = (i / w) as u32;
+        out.put_pixel(x, y, Rgb([
+            (sb * 255.0 + 0.5) as u8,
+            (sg * 255.0 + 0.5) as u8,
+            (sr * 255.0 + 0.5) as u8,
+        ]));
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "nef")]
+pub fn load_raw_preview_bgr8(path: &str, max_side: u32) -> Result<RgbImage> {
+    // 简化：全分辨率 demosaic 后再按需缩放到 max_side
+    let full = load_raw_fullres_bgr8(path)?;
+    let (w, h) = (full.width(), full.height());
+    let scale = (max_side as f32 / (w.max(h)) as f32).min(1.0);
+    if scale >= 0.999 {
+        return Ok(full);
+    }
+    let nw = (w as f32 * scale).max(1.0) as u32;
+    let nh = (h as f32 * scale).max(1.0) as u32;
+    Ok(image::imageops::resize(&full, nw, nh, image::imageops::FilterType::Triangle))
 }
 
 fn dyn_to_rgb8(img: &DynamicImage) -> RgbImage {

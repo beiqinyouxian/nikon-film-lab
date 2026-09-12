@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 film_core = { path = "../film_core" }
 
 [features]
-default = []
+default = ["nef"]
 nef = ["film_core/nef"]
 
 [[bin]]

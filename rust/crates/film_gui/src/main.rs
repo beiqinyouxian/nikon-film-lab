@@ -389,14 +389,27 @@ impl AppState {
     fn load_current_source(&mut self) {
         let Some(i) = self.current else { return; };
         let Some(item) = self.items.get(i) else { return; };
-        match core::load_image_bgr_or_rgb8(item.path.to_string_lossy().as_ref()) {
-            Ok(core::InputImage::Rgb8(rgb)) => {
-                // 核心输出为 BGR 约定，这里统一用 RGB8，process 接口同样使用 RGB8
-                // 由于 load_image_bgr_or_rgb8 返回的是 RGB（由 image crate 解码），直接使用
-                self.src_rgb8 = Some(rgb);
+        let lower = item.path.to_string_lossy().to_lowercase();
+        if lower.ends_with(".nef") {
+            #[cfg(feature = "nef")]
+            {
+                match core::load_raw_preview_bgr8(&item.path.to_string_lossy(), 1600) {
+                    Ok(img) => self.src_rgb8 = Some(img),
+                    Err(e) => eprintln!("RAW 预览失败: {}", e),
+                }
             }
-            Err(e) => {
-                eprintln!("加载失败: {}", e);
+            #[cfg(not(feature = "nef"))]
+            {
+                eprintln!("未启用 RAW 支持（编译特性 nef 关闭）");
+            }
+        } else {
+            match core::load_image_bgr_or_rgb8(item.path.to_string_lossy().as_ref()) {
+                Ok(core::InputImage::Rgb8(rgb)) => {
+                    self.src_rgb8 = Some(rgb);
+                }
+                Err(e) => {
+                    eprintln!("加载失败: {}", e);
+                }
             }
         }
     }
@@ -445,7 +458,7 @@ fn upload_rgb8_as_texture(ctx: &egui::Context, img: &RgbImage) -> TextureHandle 
 fn is_supported(p: &Path) -> bool {
     if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
         let e = ext.to_ascii_lowercase();
-        return matches!(e.as_str(), "jpg" | "jpeg");
+        return matches!(e.as_str(), "jpg" | "jpeg" | "nef");
     }
     false
 }
@@ -484,14 +497,26 @@ fn dropped_files(ctx: &egui::Context) -> Option<Vec<PathBuf>> {
 
 fn load_thumb_rgb8(path: &Path, max_side: u32) -> Option<RgbImage> {
     if !is_supported(path) { return None; }
-    let img = image::open(path).ok()?;
-    let rgb = img.to_rgb8();
-    let (w, h) = (rgb.width(), rgb.height());
-    let scale = (max_side as f32 / w.max(h) as f32).clamp(0.0, 1.0);
-    let (nw, nh) = if scale < 1.0 {
-        ((w as f32 * scale) as u32, (h as f32 * scale) as u32)
-    } else { (w, h) };
-    Some(image::imageops::resize(&rgb, nw.max(1), nh.max(1), image::imageops::FilterType::Triangle))
+    let lower = path.to_string_lossy().to_lowercase();
+    if lower.ends_with(".nef") {
+        #[cfg(feature = "nef")]
+        {
+            return core::load_raw_preview_bgr8(&path.to_string_lossy(), max_side).ok();
+        }
+        #[cfg(not(feature = "nef"))]
+        {
+            return None;
+        }
+    } else {
+        let img = image::open(path).ok()?;
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let scale = (max_side as f32 / w.max(h) as f32).clamp(0.0, 1.0);
+        let (nw, nh) = if scale < 1.0 {
+            ((w as f32 * scale) as u32, (h as f32 * scale) as u32)
+        } else { (w, h) };
+        return Some(image::imageops::resize(&rgb, nw.max(1), nh.max(1), image::imageops::FilterType::Triangle));
+    }
 }
 
 fn image_to_retained(img: RgbImage) -> RetainedImage {
@@ -517,11 +542,33 @@ impl AppState {
     fn export_current(&mut self) {
         let Some(i) = self.current else { return; };
         if let Some(item) = self.items.get(i) {
-            let Some(src) = self.src_rgb8.clone() else { return; };
-            let processed = core::process_rgb8(&src, &self.opts);
+            // 始终全分辨率重载
+            let lower = item.path.to_string_lossy().to_lowercase();
+            let full = if lower.ends_with(".nef") {
+                #[cfg(feature = "nef")]
+                {
+                    match core::load_raw_fullres_bgr8(&item.path.to_string_lossy()) {
+                        Ok(img) => img,
+                        Err(e) => { eprintln!("RAW 导出解码失败: {}", e); return; }
+                    }
+                }
+                #[cfg(not(feature = "nef"))]
+                {
+                    eprintln!("未启用 RAW 支持（编译特性 nef 关闭）"); return;
+                }
+            } else {
+                match core::load_image_bgr_or_rgb8(item.path.to_string_lossy().as_ref()) {
+                    Ok(core::InputImage::Rgb8(rgb)) => rgb,
+                    Err(e) => { eprintln!("载入失败: {}", e); return; }
+                }
+            };
+            let processed = core::process_rgb8(&full, &self.opts);
             let name = item.path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
             let out_path = self.export_dir.join(format!("{name}_film.jpg"));
-            let exif = if is_supported(&item.path) { extract_exif_app1(&item.path).ok() } else { None };
+            // RAW→JPG 暂不复制 EXIF；JPG→JPG 尝试 EXIF 透传
+            let exif = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                extract_exif_app1(&item.path).ok()
+            } else { None };
             if let Err(e) = write_jpeg_with_optional_exif(&processed, &out_path, exif.as_deref(), 95) {
                 eprintln!("导出失败: {e}");
             }

@@ -176,10 +176,17 @@ cargo run -p film_gui
   - 导出：全分辨率 JPEG（质量 95），JPG→JPG 场景尝试 EXIF 透传（尽力而为）
   - 单元测试：形状保持、基础参数有效性
 - 待办（仍由 Python 版提供或下一阶段迁移）：
-  - NEF（RAW）解码：计划 `rawloader`（纯 Rust），或 LibRaw 绑定（需本地库）
-  - 导出：RAW→JPG 的 EXIF 更完整的复制（当前仅 JPG→JPG 尝试透传）
-  - 队列缩略图：NEF 的缩略/嵌入预览（后续在 NEF 解码阶段一并支持）
+  - RAW→JPG 的 EXIF 更完整的复制（当前仅 JPG→JPG 尝试透传；RAW→JPG 暂无 EXIF）
   - OpenCL/GPU（非阻塞项；先专注 CPU 热路径）
+
+### RAW / NEF 支持（本次新增）
+- 解码：优先使用 `rawloader` + `demosaic`（Bayer 去马赛克）实现纯 Rust 流程；如遇质量/兼容性问题，将在后续评估 LibRaw 绑定，但不阻塞当前进度
+- 队列：接受 `.nef/.NEF`；缩略与预览来自解码后的缩小图；大图导出使用全分辨率 demosaic → sRGB → JPEG（质量 95）
+- EXIF：RAW→JPG 暂不复制 EXIF；README 明确限制；JPG→JPG 维持 APP1 Exif 透传尝试
+- 交互：错误信息与提示为中文；保持 UI 响应（预览有防抖；重处理在计算完成后更新）
+
+测试建议
+- 可从 `https://raw.pixls.us/` 下载公开 NEF 样张进行验证；比较 Python 版（rawpy/LibRaw）与 Rust 版在外观上的差异
 
 ### CI：Windows 可执行文件（Rust）
 - 工作流：`.github/workflows/windows-rust.yml`

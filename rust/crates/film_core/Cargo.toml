@@ -7,7 +7,7 @@ description = "Core image processing pipeline for Nikon Film Lab (Rust)"
 
 [features]
 # Enable NEF (RAW) loading via rawloader when available
-nef = ["dep:rawloader"]
+nef = ["dep:rawloader", "dep:demosaic"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -25,6 +25,7 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rawloader = { version = "0.37", optional = true }
+demosaic = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"
