@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::thread;
 
-use eframe::{egui, egui::{ColorImage, TextureHandle}};
+use eframe::{egui, egui::{ColorImage, TextureHandle, FontDefinitions, FontData, FontFamily}};
 use egui_extras::RetainedImage;
 use film_core::{self as core, ProcessOptions, GrainType, VignetteMode};
 use image::RgbImage;
@@ -21,8 +21,41 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Nikon Film Lab (Rust)",
         native_options,
-        Box::new(|_cc| Box::new(AppState::default())),
+        Box::new(|cc| {
+            // Windows CJK 字体注入，避免中文方块（tofu）
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(bytes) = load_windows_cjk_font_bytes() {
+                    let mut fonts = FontDefinitions::default();
+                    fonts.font_data.insert("cjk".to_owned(), FontData::from_owned(bytes));
+                    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "cjk".to_owned());
+                    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "cjk".to_owned());
+                    cc.egui_ctx.set_fonts(fonts);
+                }
+            }
+            Box::new(AppState::default())
+        }),
     )
+}
+
+#[cfg(target_os = "windows")]
+fn load_windows_cjk_font_bytes() -> Option<Vec<u8>> {
+    // 优先顺序：Microsoft YaHei UI / Microsoft YaHei / SimHei / Noto Sans CJK / Source Han Sans
+    let candidates = [
+        r"C:\Windows\Fonts\msyh.ttc",      // Microsoft YaHei
+        r"C:\Windows\Fonts\msyhbd.ttc",    // Microsoft YaHei Bold
+        r"C:\Windows\Fonts\msyh.ttf",      // Some systems may have ttf
+        r"C:\Windows\Fonts\simhei.ttf",    // SimHei
+        r"C:\Windows\Fonts\NotoSansCJK-Regular.ttc",
+        r"C:\Windows\Fonts\NotoSansSC-Regular.otf",
+        r"C:\Windows\Fonts\SourceHanSansSC-Regular.otf",
+    ];
+    for p in candidates {
+        if let Ok(data) = std::fs::read(p) {
+            return Some(data);
+        }
+    }
+    None
 }
 
 #[derive(Default)]
