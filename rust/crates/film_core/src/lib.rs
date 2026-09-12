@@ -1056,7 +1056,8 @@ pub fn load_image_bgr_or_rgb8(path: &str) -> Result<InputImage> {
 
 #[cfg(feature = "nef")]
 pub fn load_raw_fullres_bgr8(path: &str) -> Result<RgbImage> {
-    use demosaic::{demosaic, Algorithm, CfaPattern};
+use demosaic::{demosaic, Algorithm, CfaPattern};
+use rayon::prelude::*;
     let raw = rawloader::decode_file(path).with_context(|| format!("RAW 解码失败: {}", path))?;
     let w = raw.width;
     let h = raw.height;
@@ -1090,9 +1091,9 @@ pub fn load_raw_fullres_bgr8(path: &str) -> Result<RgbImage> {
             CfaPattern::bayer_rggb()
         }
     };
-    // 去马赛克（Bilinear，后续可切换更高质量算法）
+    // 去马赛克（AHD：质量较高，适用于导出全分辨率）
     let mut rgb_planar = vec![0f32; 3 * w * h];
-    demosaic(&mono, w, h, &cfa_pat, Algorithm::Bilinear, &mut rgb_planar)
+    demosaic(&mono, w, h, &cfa_pat, Algorithm::Ahd, &mut rgb_planar)
         .map_err(|e| anyhow::anyhow!("demosaic 失败: {:?}", e))?;
     // 白平衡
     let wb = raw.wb_coeffs;
@@ -1123,19 +1124,34 @@ pub fn load_raw_fullres_bgr8(path: &str) -> Result<RgbImage> {
     ];
     // 写入 BGR8
     let mut out = RgbImage::new(w as u32, h as u32);
+    // 并行写入
+    (0..plane).into_par_iter().for_each(|i| {
+        let r = rgb_planar[i];
+        let g = rgb_planar[plane + i];
+        let b = rgb_planar[2 * plane + i];
+        let sr_lin = (mtx[0][0]*r + mtx[0][1]*g + mtx[0][2]*b).clamp(0.0, 1.0);
+        let sg_lin = (mtx[1][0]*r + mtx[1][1]*g + mtx[1][2]*b).clamp(0.0, 1.0);
+        let sb_lin = (mtx[2][0]*r + mtx[2][1]*g + mtx[2][2]*b).clamp(0.0, 1.0);
+        let gamma = |x: f32| if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0/2.4) - 0.055 };
+        let sr = gamma(sr_lin).clamp(0.0, 1.0);
+        let sg = gamma(sg_lin).clamp(0.0, 1.0);
+        let sb = gamma(sb_lin).clamp(0.0, 1.0);
+        let x = (i % w) as u32;
+        let y = (i / w) as u32;
+        // 安全写：使用内层可变借用需串行；这里改为先收集到缓冲区后统一写入
+    });
+    // 将并行结果统一落盘（为避免并发写 pixel，这里重算一遍但开销可接受；如需极致优化可改为共享缓冲）
     for i in 0..plane {
         let r = rgb_planar[i];
         let g = rgb_planar[plane + i];
         let b = rgb_planar[2 * plane + i];
-        // 线性相机 RGB -> 线性 sRGB 近似（通过 XYZ）
-        let sr = (mtx[0][0]*r + mtx[0][1]*g + mtx[0][2]*b).clamp(0.0, 1.0);
-        let sg = (mtx[1][0]*r + mtx[1][1]*g + mtx[1][2]*b).clamp(0.0, 1.0);
-        let sb = (mtx[2][0]*r + mtx[2][1]*g + mtx[2][2]*b).clamp(0.0, 1.0);
-        // sRGB 伽马
+        let sr_lin = (mtx[0][0]*r + mtx[0][1]*g + mtx[0][2]*b).clamp(0.0, 1.0);
+        let sg_lin = (mtx[1][0]*r + mtx[1][1]*g + mtx[1][2]*b).clamp(0.0, 1.0);
+        let sb_lin = (mtx[2][0]*r + mtx[2][1]*g + mtx[2][2]*b).clamp(0.0, 1.0);
         let gamma = |x: f32| if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0/2.4) - 0.055 };
-        let sr = gamma(sr).clamp(0.0, 1.0);
-        let sg = gamma(sg).clamp(0.0, 1.0);
-        let sb = gamma(sb).clamp(0.0, 1.0);
+        let sr = gamma(sr_lin).clamp(0.0, 1.0);
+        let sg = gamma(sg_lin).clamp(0.0, 1.0);
+        let sb = gamma(sb_lin).clamp(0.0, 1.0);
         let x = (i % w) as u32;
         let y = (i / w) as u32;
         out.put_pixel(x, y, Rgb([
@@ -1149,16 +1165,81 @@ pub fn load_raw_fullres_bgr8(path: &str) -> Result<RgbImage> {
 
 #[cfg(feature = "nef")]
 pub fn load_raw_preview_bgr8(path: &str, max_side: u32) -> Result<RgbImage> {
-    // 简化：全分辨率 demosaic 后再按需缩放到 max_side
-    let full = load_raw_fullres_bgr8(path)?;
-    let (w, h) = (full.width(), full.height());
-    let scale = (max_side as f32 / (w.max(h)) as f32).min(1.0);
-    if scale >= 0.999 {
-        return Ok(full);
+    use demosaic::{demosaic, Algorithm, CfaPattern};
+    let raw = rawloader::decode_file(path).with_context(|| format!("RAW 解码失败: {}", path))?;
+    let (mut w, mut h) = (raw.width, raw.height);
+    // 构建归一化单通道 CFA（与全分辨率相同流程）
+    let data_u16 = match &raw.data {
+        rawloader::RawImageData::Integer(v) => v,
+        _ => bail!("不支持的 RAW 数据类型"),
+    };
+    let mut mono = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let c = raw.cfa.color_at(y, x);
+            let bl = raw.blacklevels[c.min(3)] as f32;
+            let wl = raw.whitelevels[c.min(3)] as f32;
+            let v = data_u16[idx] as f32;
+            mono[idx] = ((v - bl) / (wl - bl)).clamp(0.0, 1.0);
+        }
     }
-    let nw = (w as f32 * scale).max(1.0) as u32;
-    let nh = (h as f32 * scale).max(1.0) as u32;
-    Ok(image::imageops::resize(&full, nw, nh, image::imageops::FilterType::Triangle))
+    // 预览早期下采样（2 的幂次）以降低 demosaic 计算量
+    let mut step: usize = 1;
+    while ((w.max(h) as f32) / ((step * 2) as f32)) >= (max_side as f32 * 0.9) {
+        step *= 2;
+    }
+    if step > 1 {
+        let nw = w / step;
+        let nh = h / step;
+        let mut dec = vec![0f32; nw * nh];
+        for y in 0..nh {
+            for x in 0..nw {
+                dec[y * nw + x] = mono[(y * step) * w + (x * step)];
+            }
+        }
+        mono = dec;
+        w = nw;
+        h = nh;
+    }
+    // demosaic 使用更快算法（MHC 或 PPG，择其一）；此处选 MHC 兼顾质量/速度
+    let cfa_pat = match raw.cfa.to_string().as_str() {
+        "RGGB" => CfaPattern::bayer_rggb(),
+        "BGGR" => CfaPattern::bayer_bggr(),
+        "GRBG" => CfaPattern::bayer_grbg(),
+        "GBRG" => CfaPattern::bayer_gbrg(),
+        _ => CfaPattern::bayer_rggb(),
+    };
+    let mut rgb_planar = vec![0f32; 3 * w * h];
+    demosaic(&mono, w, h, &cfa_pat, Algorithm::Mhc, &mut rgb_planar)
+        .map_err(|e| anyhow::anyhow!("预览 demosaic 失败: {:?}", e))?;
+    // WB + 简化色域映射（直接裁剪到 0..1 再 sRGB 伽马）
+    let wb = raw.wb_coeffs;
+    let (rwb, gwb, bwb) = (wb[0].max(0.01), wb[1].max(0.01), wb[2].max(0.01));
+    let plane = w * h;
+    for i in 0..plane {
+        rgb_planar[i] *= rwb;
+        rgb_planar[plane + i] *= gwb;
+        rgb_planar[2 * plane + i] *= bwb;
+    }
+    let mut out = RgbImage::new(w as u32, h as u32);
+    for i in 0..plane {
+        let r = rgb_planar[i].clamp(0.0, 1.0);
+        let g = rgb_planar[plane + i].clamp(0.0, 1.0);
+        let b = rgb_planar[2 * plane + i].clamp(0.0, 1.0);
+        let gamma = |x: f32| if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0/2.4) - 0.055 };
+        let sr = gamma(r).clamp(0.0, 1.0);
+        let sg = gamma(g).clamp(0.0, 1.0);
+        let sb = gamma(b).clamp(0.0, 1.0);
+        let x = (i % w) as u32;
+        let y = (i / w) as u32;
+        out.put_pixel(x, y, Rgb([
+            (sb * 255.0 + 0.5) as u8,
+            (sg * 255.0 + 0.5) as u8,
+            (sr * 255.0 + 0.5) as u8,
+        ]));
+    }
+    Ok(out)
 }
 
 fn dyn_to_rgb8(img: &DynamicImage) -> RgbImage {

@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+use std::thread;
 
 use eframe::{egui, egui::{ColorImage, TextureHandle}};
 use egui_extras::RetainedImage;
@@ -44,6 +46,11 @@ struct AppState {
     need_render: bool,
     export_dir: PathBuf,
     last_queue_width: f32,
+    // 批量导出进度
+    exporting: bool,
+    export_cur: Arc<AtomicUsize>,
+    export_total: Arc<AtomicUsize>,
+    export_cancel: Arc<AtomicBool>,
 }
 
 impl Default for AppState {
@@ -59,6 +66,10 @@ impl Default for AppState {
             need_render: false,
             export_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             last_queue_width: 0.0,
+            exporting: false,
+            export_cur: Arc::new(AtomicUsize::new(0)),
+            export_total: Arc::new(AtomicUsize::new(0)),
+            export_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -70,12 +81,21 @@ impl eframe::App for AppState {
             ui.horizontal(|ui| {
                 ui.label("队列（支持 .jpg / .jpeg；NEF 后续开启）");
                 if ui.button("添加文件").clicked() {
-                    if let Some(files) = rfd::FileDialog::new().add_filter("Images", &["jpg", "jpeg"]).pick_files() {
+                    let mut dlg = rfd::FileDialog::new().add_filter("Images", &["jpg", "jpeg", "nef"]);
+                    if let Some(dir) = read_last_dir() {
+                        dlg = dlg.set_directory(dir);
+                    }
+                    if let Some(files) = dlg.pick_files() {
                         self.add_files(files);
                     }
                 }
                 if ui.button("添加文件夹").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    let mut dlg = rfd::FileDialog::new();
+                    if let Some(dir) = read_last_dir() {
+                        dlg = dlg.set_directory(dir);
+                    }
+                    if let Some(dir) = dlg.pick_folder() {
+                        write_last_dir(&dir);
                         let mut files = vec![];
                         if let Ok(rd) = std::fs::read_dir(dir) {
                             for e in rd.flatten() {
@@ -99,15 +119,32 @@ impl eframe::App for AppState {
                 let path_str = self.export_dir.to_string_lossy().to_string();
                 ui.monospace(ellipsize_path(&path_str, 48));
                 if ui.button("选择…").clicked() {
-                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    let mut dlg = rfd::FileDialog::new();
+                    if let Some(dir) = read_last_dir() {
+                        dlg = dlg.set_directory(dir);
+                    }
+                    if let Some(d) = dlg.pick_folder() {
                         self.export_dir = d;
+                        write_last_dir(&self.export_dir);
                     }
                 }
                 if ui.button("导出当前").clicked() {
                     self.export_current();
                 }
                 if ui.button("导出全部").clicked() {
-                    self.export_all();
+                    if !self.exporting {
+                        self.start_export_all();
+                    }
+                }
+                if self.exporting {
+                    let cur = self.export_cur.load(Ordering::Relaxed);
+                    let tot = self.export_total.load(Ordering::Relaxed).max(1);
+                    let pct = (cur as f32 / tot as f32 * 100.0).round() as i32;
+                    ui.separator();
+                    ui.label(format!("批量导出进度：{cur}/{tot}（{pct}%）"));
+                    if ui.button("取消导出").clicked() {
+                        self.export_cancel.store(true, Ordering::Relaxed);
+                    }
                 }
             });
         });
@@ -361,6 +398,13 @@ impl eframe::App for AppState {
             self.render_preview(ctx);
             self.need_render = false;
         }
+    // 导出完成检测（简易轮询）
+    if self.exporting {
+        let done = self.export_cur.load(Ordering::Relaxed) >= self.export_total.load(Ordering::Relaxed);
+        if done || self.export_cancel.load(Ordering::Relaxed) {
+            self.exporting = false;
+        }
+    }
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
@@ -370,6 +414,9 @@ impl AppState {
         for p in files {
             if !is_supported(&p) {
                 continue;
+            }
+            if let Some(dir) = p.parent() {
+                write_last_dir(dir);
             }
             self.items.push(QueueItem { path: p, thumb: None });
         }
@@ -538,6 +585,27 @@ fn ellipsize_path(s: &str, max_len: usize) -> String {
     format!("{}…{}", &s[..keep], &s[s.len()-keep..])
 }
 
+fn config_path() -> Option<PathBuf> {
+    let base = dirs::config_dir()?;
+    let dir = base.join("nikon-film-lab-rs");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("last_dir.txt"))
+}
+
+fn read_last_dir() -> Option<PathBuf> {
+    let p = config_path()?;
+    let s = std::fs::read_to_string(p).ok()?;
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    Some(PathBuf::from(s))
+}
+
+fn write_last_dir(dir: &Path) {
+    if let Some(p) = config_path() {
+        let _ = std::fs::write(p, dir.to_string_lossy().as_bytes());
+    }
+}
+
 impl AppState {
     fn export_current(&mut self) {
         let Some(i) = self.current else { return; };
@@ -574,17 +642,51 @@ impl AppState {
             }
         }
     }
-    fn export_all(&mut self) {
-        for idx in 0..self.items.len() {
-            let p = self.items[idx].path.clone();
-            if let Ok(core::InputImage::Rgb8(rgb)) = core::load_image_bgr_or_rgb8(p.to_string_lossy().as_ref()) {
-                let processed = core::process_rgb8(&rgb, &self.opts);
+    fn start_export_all(&mut self) {
+        // 只拷贝路径列表，避免缩略图克隆
+        let items: Vec<PathBuf> = self.items.iter().map(|it| it.path.clone()).collect();
+        let export_dir = self.export_dir.clone();
+        let opts = self.opts.clone();
+        let cur = self.export_cur.clone();
+        let tot = self.export_total.clone();
+        let cancel = self.export_cancel.clone();
+        cur.store(0, Ordering::Relaxed);
+        tot.store(items.len(), Ordering::Relaxed);
+        cancel.store(false, Ordering::Relaxed);
+        self.exporting = true;
+        thread::spawn(move || {
+            for (idx, p) in items.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) { break; }
+                let lower = p.to_string_lossy().to_lowercase();
+                let full = if lower.ends_with(".nef") {
+                    #[cfg(feature = "nef")]
+                    {
+                        match core::load_raw_fullres_bgr8(&p.to_string_lossy()) {
+                            Ok(img) => img,
+                            Err(_) => { cur.store(idx+1, Ordering::Relaxed); continue; }
+                        }
+                    }
+                    #[cfg(not(feature = "nef"))]
+                    {
+                        cur.store(idx+1, Ordering::Relaxed);
+                        continue;
+                    }
+                } else {
+                    match core::load_image_bgr_or_rgb8(p.to_string_lossy().as_ref()) {
+                        Ok(core::InputImage::Rgb8(rgb)) => rgb,
+                        Err(_) => { cur.store(idx+1, Ordering::Relaxed); continue; }
+                    }
+                };
+                let processed = core::process_rgb8(&full, &opts);
                 let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
-                let out_path = self.export_dir.join(format!("{name}_film.jpg"));
-                let exif = if is_supported(&p) { extract_exif_app1(&p).ok() } else { None };
+                let out_path = export_dir.join(format!("{name}_film.jpg"));
+                let exif = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                    extract_exif_app1(&p).ok()
+                } else { None };
                 let _ = write_jpeg_with_optional_exif(&processed, &out_path, exif.as_deref(), 95);
+                cur.store(idx+1, Ordering::Relaxed);
             }
-        }
+        });
     }
 }
 

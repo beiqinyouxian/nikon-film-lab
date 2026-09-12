@@ -185,6 +185,10 @@ cargo run -p film_gui
 - EXIF：RAW→JPG 暂不复制 EXIF；README 明确限制；JPG→JPG 维持 APP1 Exif 透传尝试
 - 交互：错误信息与提示为中文；保持 UI 响应（预览有防抖；重处理在计算完成后更新）
 
+### 预览 vs 导出（质量与速度）
+- 预览/缩略：优先速度，使用“早期降采样 + 快速去马赛克（MHC）”路径，快速响应调参
+- 导出：优先质量，使用更高质量的 AHD 去马赛克与全分辨率处理
+
 测试建议
 - 可从 `https://raw.pixls.us/` 下载公开 NEF 样张进行验证；比较 Python 版（rawpy/LibRaw）与 Rust 版在外观上的差异
 
