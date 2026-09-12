@@ -163,6 +163,8 @@ class ImageProcessor:
             out = self._apply_color_splitter(out, options.hsl_sat8, options.hsl_lum8)
         # Apply specialty FX independently from preset
         out = self._apply_special_fx(out, options)
+        # 数值健壮性：清理 NaN/Inf，避免后续 UI 转换崩溃
+        out = np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 
     # ---- Specialty FX helpers (BGR float32 0..1) ----

@@ -27,6 +27,22 @@ def is_supported(path: str) -> bool:
 
 
 def bgr_to_qpixmap(bgr: np.ndarray, max_side: int = 800) -> QtGui.QPixmap:
+    # 防御：空数组/维度不对/通道不对时返回占位图，避免 QImage 崩溃
+    try:
+        if not isinstance(bgr, np.ndarray) or bgr.ndim < 2:
+            raise ValueError("invalid array")
+        if bgr.ndim == 2:
+            bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+        if bgr.shape[2] != 3:
+            raise ValueError("expect HxWx3")
+        if bgr.size == 0:
+            raise ValueError("empty image")
+        if bgr.dtype != np.uint8:
+            bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+    except Exception:
+        pm = QtGui.QPixmap(max_side, max_side)
+        pm.fill(QtGui.QColor("#555555"))
+        return pm
     h, w = bgr.shape[:2]
     scale = min(1.0, max_side / max(h, w))
     display = bgr
@@ -735,6 +751,21 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._thumb_worker.wait(800)
             except Exception:
                 pass
+            # 停止处理线程，避免退出时 QThread 仍在运行
+            try:
+                if hasattr(self, "thread") and isinstance(self.thread, QtCore.QThread):
+                    if self.thread.isRunning():
+                        # 请求尽快结束
+                        if hasattr(self.thread, "cancelled"):
+                            setattr(self.thread, "cancelled", True)
+                        # 尝试优雅退出
+                        try:
+                            self.thread.quit()
+                        except Exception:
+                            pass
+                        self.thread.wait(1200)
+            except Exception:
+                pass
         except Exception:
             pass
         super().closeEvent(event)
@@ -1099,6 +1130,15 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             if not isinstance(bgr8, np.ndarray):
                 return
+            # 防御：确保为 uint8 HxWx3 非空
+            if bgr8.ndim == 2:
+                bgr8 = cv2.cvtColor(bgr8, cv2.COLOR_GRAY2BGR)
+            if bgr8.ndim != 3 or bgr8.shape[2] != 3:
+                return
+            if bgr8.size == 0:
+                return
+            if bgr8.dtype != np.uint8:
+                bgr8 = np.clip(bgr8, 0, 255).astype(np.uint8)
             rgb = np.ascontiguousarray(bgr8[..., ::-1])
             h2, w2 = rgb.shape[:2]
             qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888).copy()
@@ -1148,13 +1188,33 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_label_image_fit(self.preview_label, self._current_preview_bgr)
 
     def _set_label_image_fit(self, label: QtWidgets.QLabel, bgr: np.ndarray) -> None:
-        rgb = np.ascontiguousarray(bgr[..., ::-1])
-        h2, w2 = rgb.shape[:2]
-        bytes_per_line = 3 * w2
-        qimg = QtGui.QImage(rgb.data, w2, h2, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
-        pix = QtGui.QPixmap.fromImage(qimg)
-        scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-        label.setPixmap(scaled)
+        try:
+            if not isinstance(bgr, np.ndarray) or bgr.ndim < 2 or bgr.size == 0:
+                label.clear()
+                return
+            if bgr.ndim == 2:
+                bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+            if bgr.shape[2] != 3:
+                label.clear()
+                return
+            if bgr.dtype != np.uint8:
+                bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+            rgb = np.ascontiguousarray(bgr[..., ::-1])
+            h2, w2 = rgb.shape[:2]
+            bytes_per_line = 3 * w2
+            if h2 <= 0 or w2 <= 0:
+                label.clear()
+                return
+            qimg = QtGui.QImage(rgb.data, w2, h2, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
+            pix = QtGui.QPixmap.fromImage(qimg)
+            scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+            label.setPixmap(scaled)
+        except Exception:
+            # 安全降级：避免任何崩溃
+            try:
+                label.clear()
+            except Exception:
+                pass
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
