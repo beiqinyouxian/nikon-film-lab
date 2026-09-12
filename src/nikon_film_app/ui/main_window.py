@@ -27,12 +27,26 @@ def is_supported(path: str) -> bool:
 
 
 def bgr_to_qpixmap(bgr: np.ndarray, max_side: int = 800) -> QtGui.QPixmap:
+    # Guard bad arrays so QImage never hard-crashes the process
+    try:
+        if not isinstance(bgr, np.ndarray) or bgr.ndim < 2:
+            raise ValueError("invalid array")
+        if bgr.ndim == 2:
+            bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+        if bgr.shape[2] != 3 or bgr.size == 0:
+            raise ValueError("expect non-empty HxWx3")
+        if bgr.dtype != np.uint8:
+            bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+    except Exception:
+        pm = QtGui.QPixmap(max_side, max_side)
+        pm.fill(QtGui.QColor("#555555"))
+        return pm
     h, w = bgr.shape[:2]
     scale = min(1.0, max_side / max(h, w))
     display = bgr
     if scale < 1.0:
         display = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    rgb = display[..., ::-1].copy()
+    rgb = np.ascontiguousarray(display[..., ::-1])
     h2, w2 = rgb.shape[:2]
     qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888)
     return QtGui.QPixmap.fromImage(qimg.copy())
@@ -218,13 +232,19 @@ class ThumbWorker(QtCore.QThread):
                     img = r2.image_bgr8
             else:
                 return None
-            if img is None or img.size == 0:
+            if img is None or getattr(img, "size", 0) == 0:
                 return None
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            if img.ndim != 3 or img.shape[2] != 3:
+                return None
+            if img.dtype != np.uint8:
+                img = np.clip(img, 0, 255).astype(np.uint8)
             h, w = img.shape[:2]
             scale = min(1.0, float(self.max_side) / float(max(h, w)))
             if scale < 1.0:
                 img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
-            return img
+            return np.ascontiguousarray(img)
         except Exception:
             return None
 
@@ -643,8 +663,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self.root_splitter)
         self._apply_splitter_style()
         self._restore_splitters()
-        self.list_widget.resized.connect(self._sync_queue_thumb_size)
-        self.root_splitter.splitterMoved.connect(lambda *_: self._sync_queue_thumb_size())
+        self._queue_resize_timer = QtCore.QTimer(self)
+        self._queue_resize_timer.setSingleShot(True)
+        self._queue_resize_timer.setInterval(50)
+        self._queue_resize_timer.timeout.connect(self._sync_queue_thumb_size)
+        self.list_widget.resized.connect(lambda: self._queue_resize_timer.start())
+        self.root_splitter.splitterMoved.connect(lambda *_: self._queue_resize_timer.start())
         QtCore.QTimer.singleShot(0, self._sync_queue_thumb_size)
 
         # Signals
@@ -747,6 +771,18 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._thumb_worker.wait(800)
             except Exception:
                 pass
+            # 停止处理线程，避免退出时 QThread 仍在运行导致闪退
+            try:
+                if hasattr(self, "thread") and isinstance(self.thread, QtCore.QThread) and self.thread.isRunning():
+                    if hasattr(self.thread, "cancelled"):
+                        self.thread.cancelled = True
+                    try:
+                        self.thread.quit()
+                    except Exception:
+                        pass
+                    self.thread.wait(1200)
+            except Exception:
+                pass
         except Exception:
             pass
         super().closeEvent(event)
@@ -820,15 +856,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bgr_to_icon(self, bgr: np.ndarray, width: int) -> QtGui.QIcon:
         width = max(32, int(width))
-        h, w = bgr.shape[:2]
-        if w <= 0 or h <= 0:
+        try:
+            if not isinstance(bgr, np.ndarray) or bgr.size == 0:
+                return self._make_placeholder_icon(width)
+            if bgr.ndim == 2:
+                bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+            if bgr.ndim != 3 or bgr.shape[2] != 3:
+                return self._make_placeholder_icon(width)
+            if bgr.dtype != np.uint8:
+                bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+            h, w = bgr.shape[:2]
+            if w <= 0 or h <= 0:
+                return self._make_placeholder_icon(width)
+            scale = width / float(w)
+            nh = max(1, int(round(h * scale)))
+            resized = cv2.resize(bgr, (width, nh), interpolation=cv2.INTER_AREA)
+            rgb = np.ascontiguousarray(resized[..., ::-1])
+            qimg = QtGui.QImage(rgb.data, width, nh, 3 * width, QtGui.QImage.Format.Format_RGB888).copy()
+            return QtGui.QIcon(QtGui.QPixmap.fromImage(qimg))
+        except Exception:
             return self._make_placeholder_icon(width)
-        scale = width / float(w)
-        nh = max(1, int(round(h * scale)))
-        resized = cv2.resize(bgr, (width, nh), interpolation=cv2.INTER_AREA)
-        rgb = np.ascontiguousarray(resized[..., ::-1])
-        qimg = QtGui.QImage(rgb.data, width, nh, 3 * width, QtGui.QImage.Format.Format_RGB888).copy()
-        return QtGui.QIcon(QtGui.QPixmap.fromImage(qimg))
 
     def _sync_queue_thumb_size(self) -> None:
         w = self._queue_content_width()
@@ -1151,6 +1198,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             if not isinstance(bgr8, np.ndarray):
                 return
+            if bgr8.ndim == 2:
+                bgr8 = cv2.cvtColor(bgr8, cv2.COLOR_GRAY2BGR)
+            if bgr8.ndim != 3 or bgr8.shape[2] != 3 or bgr8.size == 0:
+                return
+            if bgr8.dtype != np.uint8:
+                bgr8 = np.clip(bgr8, 0, 255).astype(np.uint8)
             self._thumb_bgr[path] = bgr8
             it = self._path_to_item.get(path)
             if it is not None:
@@ -1196,13 +1249,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_label_image_fit(self.preview_label, self._current_preview_bgr)
 
     def _set_label_image_fit(self, label: QtWidgets.QLabel, bgr: np.ndarray) -> None:
-        rgb = np.ascontiguousarray(bgr[..., ::-1])
-        h2, w2 = rgb.shape[:2]
-        bytes_per_line = 3 * w2
-        qimg = QtGui.QImage(rgb.data, w2, h2, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
-        pix = QtGui.QPixmap.fromImage(qimg)
-        scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-        label.setPixmap(scaled)
+        try:
+            if not isinstance(bgr, np.ndarray) or bgr.ndim < 2 or bgr.size == 0:
+                label.clear()
+                return
+            if bgr.ndim == 2:
+                bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+            if bgr.shape[2] != 3:
+                label.clear()
+                return
+            if bgr.dtype != np.uint8:
+                bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+            rgb = np.ascontiguousarray(bgr[..., ::-1])
+            h2, w2 = rgb.shape[:2]
+            if h2 <= 0 or w2 <= 0:
+                label.clear()
+                return
+            bytes_per_line = 3 * w2
+            qimg = QtGui.QImage(rgb.data, w2, h2, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
+            pix = QtGui.QPixmap.fromImage(qimg)
+            scaled = pix.scaled(label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+            label.setPixmap(scaled)
+        except Exception:
+            try:
+                label.clear()
+            except Exception:
+                pass
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
