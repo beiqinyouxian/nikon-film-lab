@@ -132,3 +132,70 @@ pyinstaller --noconfirm --clean packaging/NikonFilmLab.spec
 - 已在 spec 中收集 PySide6、cv2、rawpy 的二进制与资源
 - rawpy/LibRaw、OpenCV 与 Qt 插件均已打包到 onedir 结果中
 
+---
+
+## Rust 重写（进行中）
+
+为获得更好的运行性能与 Windows 原生发行版，我们在不破坏现有 Python 应用的前提下，旁挂一个 Rust 重写版本（逐步对齐功能）。Rust 项目位于 `rust/`，采用 `cargo` 工作区：
+
+- `rust/crates/film_core`：核心图像处理库（预设/手动/颗粒/暗角/特色 FX/分色器 API）
+- `rust/crates/film_gui`：基于 egui/eframe 的桌面 GUI（中文 UI）
+
+目前交付策略（分阶段）：
+1. 工作区与 README（本次已完成）
+2. 核心处理库：提供预设与手动参数 API + 单元测试（已提供 MVP）
+3. GUI 外壳：队列/单图预览/参数连通（已提供 MVP；JPG 优先）
+4. Windows 发布工作流：GitHub Actions 产出 `.exe/.zip`（本次已添加工作流文件）
+5. 特性清单：已移植 vs 仍由 Python 提供（见下）
+
+### 架构与构建
+- UI：egui + eframe（后续如需，也可评估 iced/Slint 替代）
+- 图像：image/ndarray + 自写快速路径；并行 rayon；MVP 支持 JPG，NEF 解码计划使用 `rawloader`（纯 Rust）或后续切到 LibRaw 绑定
+- 打包：`cargo build --release`，Windows 由 CI 生成 `.zip` 工件；后续可加入安装器
+
+本地构建（Rust）：
+```bash
+cd rust
+cargo build --release -p film_gui
+# 运行
+cargo run -p film_gui
+```
+生成可执行文件（Windows/macOS/Linux）：`rust/target/release/nikon-film-lab-rs{.exe}`
+
+### Rust 版功能清单（进展）
+- 已实现（Rust）：
+  - 队列（添加文件/文件夹，拖拽导入，清空），JPG/JPEG 优先
+  - 左侧缩略图，随队列面板宽度自适应缩放（JPG）
+  - 单图预览（200ms 防抖）
+  - 预设全集（与 Python 对齐的命名与推荐强度）：不处理 / Leica Color Modern / Leica Classic Mono / Leica Chrome Vivid / Chrome 浓彩 / Chrome 经典 / Chrome 鲜艳 / Kodak Portra 400 / Kodak Gold 200 / Fuji Velvia 50 / Fuji Pro 400H / Ilford HP5 (B&W) / Kodak Tri-X / Cinestill 800T / Agfa Vista
+  - 手动：曝光、色温、清晰、对比、高光、阴影、鲜艳、饱和
+  - 分色器：8 段饱和/明度（GUI 已接线，中文标签）
+  - 颗粒：三种类型参数（分辨率自适应）
+  - 暗角：不处理/自动/手动（手动强度）
+  - 特色 FX：镜头老化、镜片划伤、过期胶片、胶片漏光（拖动滑条自动勾选）
+  - 导出：全分辨率 JPEG（质量 95），JPG→JPG 场景尝试 EXIF 透传（尽力而为）
+  - 单元测试：形状保持、基础参数有效性
+- 待办（仍由 Python 版提供或下一阶段迁移）：
+  - RAW→JPG 的 EXIF 更完整的复制（当前仅 JPG→JPG 尝试透传；RAW→JPG 暂无 EXIF）
+  - OpenCL/GPU（非阻塞项；先专注 CPU 热路径）
+
+### RAW / NEF 支持（本次新增）
+- 解码：优先使用 `rawloader` + `demosaic`（Bayer 去马赛克）实现纯 Rust 流程；如遇质量/兼容性问题，将在后续评估 LibRaw 绑定，但不阻塞当前进度
+- 队列：接受 `.nef/.NEF`；缩略与预览来自解码后的缩小图；大图导出使用全分辨率 demosaic → sRGB → JPEG（质量 95）
+- EXIF：RAW→JPG 暂不复制 EXIF；README 明确限制；JPG→JPG 维持 APP1 Exif 透传尝试
+- 交互：错误信息与提示为中文；保持 UI 响应（预览有防抖；重处理在计算完成后更新）
+
+### 预览 vs 导出（质量与速度）
+- 预览/缩略：优先速度，使用“早期降采样 + 快速去马赛克（MHC）”路径，快速响应调参
+- 导出：优先质量，使用更高质量的 AHD 去马赛克与全分辨率处理
+
+测试建议
+- 可从 `https://raw.pixls.us/` 下载公开 NEF 样张进行验证；比较 Python 版（rawpy/LibRaw）与 Rust 版在外观上的差异
+
+### CI：Windows 可执行文件（Rust）
+- 工作流：`.github/workflows/windows-rust.yml`
+- 触发：推送到 `cursor/rust-rewrite-0eab` 或手动
+- 产物：`nikon-film-lab-rs-windows-x86_64.zip`（包含 `nikon-film-lab-rs.exe`）
+
+如需更多细节，请查看 `rust/crates/film_core/src/lib.rs` 与 `rust/crates/film_gui/src/main.rs`。
+
