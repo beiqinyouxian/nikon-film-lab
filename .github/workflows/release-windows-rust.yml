@@ -1,0 +1,46 @@
+name: Release Windows (Rust)
+
+on:
+  push:
+    tags:
+      - rust-v*
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Build (release)
+        run: |
+          cargo build --release -p film_gui
+          ls -la target/release
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/release/nikon-film-lab-rs.exe dist/
+          cd dist
+          7z a nikon-film-lab-rs-windows-x86_64.zip nikon-film-lab-rs.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rust/dist/nikon-film-lab-rs-windows-x86_64.zip
+            rust/dist/nikon-film-lab-rs.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
