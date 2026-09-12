@@ -113,10 +113,15 @@ class ProcessorThread(QtCore.QThread):
 
 class DropListWidget(QtWidgets.QListWidget):
     files_dropped = QtCore.Signal(list)
+    resized = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.resized.emit()
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -146,7 +151,7 @@ class ThumbWorker(QtCore.QThread):
 
     thumb_ready = QtCore.Signal(str, object)  # path, bgr8 uint8 HxWx3
 
-    def __init__(self, parent=None, max_side: int = 128) -> None:
+    def __init__(self, parent=None, max_side: int = 512) -> None:
         super().__init__(parent)
         self.max_side = int(max_side)
         self._q: deque[str] = deque()
@@ -257,20 +262,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.list_widget = DropListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        # One-column thumbs that track the queue panel width
         self.list_widget.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
-        self.list_widget.setIconSize(QtCore.QSize(112, 112))
+        self.list_widget.setFlow(QtWidgets.QListView.Flow.TopToBottom)
+        self.list_widget.setWrapping(False)
         self.list_widget.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
         self.list_widget.setMovement(QtWidgets.QListView.Movement.Static)
-        self.list_widget.setWordWrap(True)
-        self.list_widget.setSpacing(8)
+        self.list_widget.setSpacing(6)
         self.list_widget.setUniformItemSizes(True)
-        # Thumbnails
-        self._thumb_worker = ThumbWorker(self, max_side=128)
+        self.list_widget.setWordWrap(True)
+        # Thumbnails (decode larger, display scaled to panel width)
+        self._thumb_worker = ThumbWorker(self, max_side=512)
         self._thumb_worker.thumb_ready.connect(self._on_thumb_ready)
         self._thumb_worker.start()
-        self._thumb_cache: Dict[str, QtGui.QIcon] = {}
+        self._thumb_bgr: Dict[str, np.ndarray] = {}
         self._path_to_item: Dict[str, QtWidgets.QListWidgetItem] = {}
-        self._placeholder_icon = self._make_placeholder_icon(112)
+        self._queue_thumb_w = 160
+        self._placeholder_icon = self._make_placeholder_icon(self._queue_thumb_w)
+        self.list_widget.setIconSize(QtCore.QSize(self._queue_thumb_w, self._queue_thumb_w))
 
         self.add_btn = QtWidgets.QPushButton("添加文件")
         self.add_dir_btn = QtWidgets.QPushButton("添加文件夹")
@@ -634,6 +643,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self.root_splitter)
         self._apply_splitter_style()
         self._restore_splitters()
+        self.list_widget.resized.connect(self._sync_queue_thumb_size)
+        self.root_splitter.splitterMoved.connect(lambda *_: self._sync_queue_thumb_size())
+        QtCore.QTimer.singleShot(0, self._sync_queue_thumb_size)
 
         # Signals
         self.add_btn.clicked.connect(self.on_add_files)
@@ -790,17 +802,57 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_paths(paths)
         self._request_preview_update()
 
-    def _make_placeholder_icon(self, side: int = 112) -> QtGui.QIcon:
+    def _make_placeholder_icon(self, side: int = 160) -> QtGui.QIcon:
+        side = max(48, int(side))
         pix = QtGui.QPixmap(side, side)
         pix.fill(QtGui.QColor("#555555"))
         painter = QtGui.QPainter(pix)
         painter.setPen(QtGui.QPen(QtGui.QColor("#888888")))
-        painter.drawRect(8, 8, side - 17, side - 17)
+        m = max(4, side // 16)
+        painter.drawRect(m, m, side - 2 * m - 1, side - 2 * m - 1)
         painter.end()
         return QtGui.QIcon(pix)
 
+    def _queue_content_width(self) -> int:
+        vw = int(self.list_widget.viewport().width())
+        # leave a little room for scrollbar / spacing so icon fits panel width
+        return max(64, vw - 8)
+
+    def _bgr_to_icon(self, bgr: np.ndarray, width: int) -> QtGui.QIcon:
+        width = max(32, int(width))
+        h, w = bgr.shape[:2]
+        if w <= 0 or h <= 0:
+            return self._make_placeholder_icon(width)
+        scale = width / float(w)
+        nh = max(1, int(round(h * scale)))
+        resized = cv2.resize(bgr, (width, nh), interpolation=cv2.INTER_AREA)
+        rgb = np.ascontiguousarray(resized[..., ::-1])
+        qimg = QtGui.QImage(rgb.data, width, nh, 3 * width, QtGui.QImage.Format.Format_RGB888).copy()
+        return QtGui.QIcon(QtGui.QPixmap.fromImage(qimg))
+
+    def _sync_queue_thumb_size(self) -> None:
+        w = self._queue_content_width()
+        if abs(w - getattr(self, "_queue_thumb_w", 0)) < 2 and self.list_widget.iconSize().width() == w:
+            return
+        self._queue_thumb_w = w
+        # Keep square icon box; image itself is width-fitted and may be shorter
+        self.list_widget.setIconSize(QtCore.QSize(w, w))
+        self.list_widget.setGridSize(QtCore.QSize(w + 8, w + 28))
+        self._placeholder_icon = self._make_placeholder_icon(w)
+        for path, item in list(self._path_to_item.items()):
+            item.setSizeHint(QtCore.QSize(w + 8, w + 28))
+            bgr = self._thumb_bgr.get(path)
+            if bgr is not None:
+                item.setIcon(self._bgr_to_icon(bgr, w))
+            else:
+                item.setIcon(self._placeholder_icon)
+
     def _add_paths(self, paths: List[str]) -> None:
         added = False
+        w = self._queue_content_width()
+        self._queue_thumb_w = w
+        self.list_widget.setIconSize(QtCore.QSize(w, w))
+        self.list_widget.setGridSize(QtCore.QSize(w + 8, w + 28))
         for p in paths:
             if not is_supported(p):
                 continue
@@ -810,11 +862,11 @@ class MainWindow(QtWidgets.QMainWindow):
             item = QtWidgets.QListWidgetItem(self._placeholder_icon, name)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p)
-            item.setSizeHint(QtCore.QSize(128, 140))
+            item.setSizeHint(QtCore.QSize(w + 8, w + 28))
             self.list_widget.addItem(item)
             self._path_to_item[p] = item
-            if p in self._thumb_cache:
-                item.setIcon(self._thumb_cache[p])
+            if p in self._thumb_bgr:
+                item.setIcon(self._bgr_to_icon(self._thumb_bgr[p], w))
             else:
                 self._thumb_worker.enqueue(p)
             if not added:
@@ -827,7 +879,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_clear(self) -> None:
         self.list_widget.clear()
         self._path_to_item.clear()
-        self._thumb_cache.clear()
+        self._thumb_bgr.clear()
         try:
             self._thumb_worker.clear_pending()
         except Exception:
@@ -1095,18 +1147,14 @@ class MainWindow(QtWidgets.QMainWindow):
         return preview
     
     def _on_thumb_ready(self, path: str, bgr8: object) -> None:
-        # Convert thread-delivered BGR8 to icon on UI thread
+        # Keep BGR source; scale icon to current queue width on UI thread
         try:
             if not isinstance(bgr8, np.ndarray):
                 return
-            rgb = np.ascontiguousarray(bgr8[..., ::-1])
-            h2, w2 = rgb.shape[:2]
-            qimg = QtGui.QImage(rgb.data, w2, h2, 3 * w2, QtGui.QImage.Format.Format_RGB888).copy()
-            icon = QtGui.QIcon(QtGui.QPixmap.fromImage(qimg))
-            self._thumb_cache[path] = icon
+            self._thumb_bgr[path] = bgr8
             it = self._path_to_item.get(path)
             if it is not None:
-                it.setIcon(icon)
+                it.setIcon(self._bgr_to_icon(bgr8, self._queue_content_width()))
         except Exception:
             pass
 
@@ -1158,6 +1206,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._sync_queue_thumb_size()
         self._refit_previews()
 
     def _set_grain_seed_for_path(self, path: str) -> None:
