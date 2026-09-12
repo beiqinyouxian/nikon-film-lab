@@ -162,20 +162,23 @@ cargo run -p film_gui
 ```
 生成可执行文件（Windows/macOS/Linux）：`rust/target/release/nikon-film-lab-rs{.exe}`
 
-### Rust 版功能清单（MVP）
+### Rust 版功能清单（进展）
 - 已实现（Rust）：
-  - 队列（添加文件/文件夹，JPG/JPEG）与单图预览
-  - 预设（示例：不处理 / Chrome 经典 / Kodak Portra 400），强度与推荐强度
+  - 队列（添加文件/文件夹，拖拽导入，清空），JPG/JPEG 优先
+  - 左侧缩略图，随队列面板宽度自适应缩放（JPG）
+  - 单图预览（200ms 防抖）
+  - 预设全集（与 Python 对齐的命名与推荐强度）：不处理 / Leica Color Modern / Leica Classic Mono / Leica Chrome Vivid / Chrome 浓彩 / Chrome 经典 / Chrome 鲜艳 / Kodak Portra 400 / Kodak Gold 200 / Fuji Velvia 50 / Fuji Pro 400H / Ilford HP5 (B&W) / Kodak Tri-X / Cinestill 800T / Agfa Vista
   - 手动：曝光、色温、清晰、对比、高光、阴影、鲜艳、饱和
-  - 颗粒：三种类型参数（MVP 粗粒度实现）
+  - 分色器：8 段饱和/明度（GUI 已接线，中文标签）
+  - 颗粒：三种类型参数（分辨率自适应）
   - 暗角：不处理/自动/手动（手动强度）
-  - 特色 FX：过期胶片、漏光（MVP 可见实现）
-  - 分色器：8 段饱和/明度（核心已支持，GUI 后续接线）
+  - 特色 FX：镜头老化、镜片划伤、过期胶片、胶片漏光（拖动滑条自动勾选）
+  - 导出：全分辨率 JPEG（质量 95），JPG→JPG 场景尝试 EXIF 透传（尽力而为）
   - 单元测试：形状保持、基础参数有效性
 - 待办（仍由 Python 版提供或下一阶段迁移）：
   - NEF（RAW）解码：计划 `rawloader`（纯 Rust），或 LibRaw 绑定（需本地库）
-  - 导出全分辨率 JPEG（MVP 先专注预览；导出将很快补齐）
-  - 队列缩略图与缩略自适应列宽（GUI 进一步美化）
+  - 导出：RAW→JPG 的 EXIF 更完整的复制（当前仅 JPG→JPG 尝试透传）
+  - 队列缩略图：NEF 的缩略/嵌入预览（后续在 NEF 解码阶段一并支持）
   - OpenCL/GPU（非阻塞项；先专注 CPU 热路径）
 
 ### CI：Windows 可执行文件（Rust）
