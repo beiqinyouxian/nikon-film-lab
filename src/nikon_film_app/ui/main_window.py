@@ -617,10 +617,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(6)
+        btns.addStretch(1)
         btns.addWidget(self.process_btn)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.reset_btn)
-        btns.addStretch(1)
         params_outer.addLayout(btns)
         tip = QtWidgets.QLabel("提示：拖动粗分隔条调节预览/参数高度；导出始终全分辨率。")
         tip.setWordWrap(True)
